@@ -1,0 +1,18 @@
+! Title: Test Adblock List
+! Last modified: 2024-01-01
+! Homepage: https://example.com
+
+[Adblock Plus 2.0]
+
+||ads.example.com^
+||tracker.example.com^
+||malware.bad-site.org^
+||popup.adnetwork.com^
+||banner.ads.co^
+
+! Allowlist entries
+@@||safe.ads.example.com^
+@@||analytics.mysite.com^
+
+! Lines with modifiers (should be skipped)
+||complex.example.com^$third-party

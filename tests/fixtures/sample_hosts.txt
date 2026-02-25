@@ -1,0 +1,16 @@
+# Sample hosts file for testing
+# Title: Test Blocklist
+# Last modified: 2024-01-01
+
+127.0.0.1 localhost
+127.0.0.1 localhost.localdomain
+::1 localhost
+
+0.0.0.0 ads.example.com
+0.0.0.0 tracker.example.com
+0.0.0.0 malware.bad-site.org
+127.0.0.1 analytics.spyware.net
+0.0.0.0 popup.adnetwork.com
+
+# This is a comment
+0.0.0.0 banner.ads.co
