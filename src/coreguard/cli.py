@@ -312,6 +312,56 @@ def block(domain):
     click.echo("Restart coreguard or run 'coreguard update' to apply.")
 
 
+def _remove_from_file(path: Path, domain: str) -> bool:
+    """Remove a domain from a text file. Returns True if found and removed."""
+    if not path.exists():
+        return False
+    lines = path.read_text().splitlines()
+    filtered = [l for l in lines if l.strip().lower().strip(".") != domain]
+    if len(filtered) < len(lines):
+        path.write_text("\n".join(filtered) + "\n" if filtered else "")
+        return True
+    return False
+
+
+@main.command()
+@click.argument("domain")
+def unblock(domain):
+    """Unblock a domain — adds to allowlist and triggers immediate reload."""
+    domain = domain.lower().strip(".")
+
+    # Remove from custom block file if present
+    removed = _remove_from_file(CUSTOM_BLOCK_FILE, domain)
+    if removed:
+        click.echo(f"Removed '{domain}' from custom blocklist.")
+
+    # Add to allowlist (handles filter-list blocks too)
+    existing = set()
+    if CUSTOM_ALLOW_FILE.exists():
+        existing = {
+            line.strip().lower().strip(".")
+            for line in CUSTOM_ALLOW_FILE.read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+    if domain not in existing:
+        with open(CUSTOM_ALLOW_FILE, "a") as f:
+            f.write(domain + "\n")
+        click.echo(f"Added '{domain}' to allowlist.")
+    else:
+        click.echo(f"'{domain}' is already in allowlist.")
+
+    # Trigger reload if daemon is running
+    pid = read_pid()
+    if pid and process_exists(pid):
+        try:
+            os.kill(pid, signal.SIGHUP)
+            click.echo("Reload signal sent — takes effect within seconds.")
+        except (ProcessLookupError, PermissionError):
+            click.echo("Run 'sudo coreguard update' to apply.")
+    else:
+        click.echo("Daemon not running. Changes will apply on next start.")
+
+
 @main.command()
 @click.option("--follow", "-f", is_flag=True, help="Follow log output in real time")
 @click.option("--lines", "-n", default=20, help="Number of lines to show")

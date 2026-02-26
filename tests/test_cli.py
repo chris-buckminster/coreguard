@@ -1,3 +1,4 @@
+import signal
 from unittest.mock import patch, MagicMock
 
 from click.testing import CliRunner
@@ -61,3 +62,61 @@ class TestCLI:
             result = self.runner.invoke(main, ["block", "evil.com"])
             assert result.exit_code == 0
             assert "evil.com" in block_file.read_text()
+
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_unblock_adds_to_allowlist(self, mock_pid, tmp_path):
+        allow_file = tmp_path / "allow.txt"
+        allow_file.touch()
+        block_file = tmp_path / "block.txt"
+        block_file.touch()
+        with patch("coreguard.cli.CUSTOM_ALLOW_FILE", allow_file), \
+             patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file):
+            result = self.runner.invoke(main, ["unblock", "example.com"])
+            assert result.exit_code == 0
+            assert "example.com" in allow_file.read_text()
+            assert "allowlist" in result.output
+
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_unblock_removes_from_blocklist(self, mock_pid, tmp_path):
+        allow_file = tmp_path / "allow.txt"
+        allow_file.touch()
+        block_file = tmp_path / "block.txt"
+        block_file.write_text("other.com\nevil.com\nmore.com\n")
+        with patch("coreguard.cli.CUSTOM_ALLOW_FILE", allow_file), \
+             patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file):
+            result = self.runner.invoke(main, ["unblock", "evil.com"])
+            assert result.exit_code == 0
+            assert "Removed" in result.output
+            contents = block_file.read_text()
+            assert "evil.com" not in contents
+            assert "other.com" in contents
+            assert "more.com" in contents
+
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_unblock_deduplicates(self, mock_pid, tmp_path):
+        allow_file = tmp_path / "allow.txt"
+        allow_file.write_text("example.com\n")
+        block_file = tmp_path / "block.txt"
+        block_file.touch()
+        with patch("coreguard.cli.CUSTOM_ALLOW_FILE", allow_file), \
+             patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file):
+            result = self.runner.invoke(main, ["unblock", "example.com"])
+            assert result.exit_code == 0
+            assert "already in allowlist" in result.output
+            # Should not duplicate
+            assert allow_file.read_text().count("example.com") == 1
+
+    @patch("coreguard.cli.process_exists", return_value=True)
+    @patch("coreguard.cli.read_pid", return_value=1234)
+    def test_unblock_signals_daemon(self, mock_pid, mock_exists, tmp_path):
+        allow_file = tmp_path / "allow.txt"
+        allow_file.touch()
+        block_file = tmp_path / "block.txt"
+        block_file.touch()
+        with patch("coreguard.cli.CUSTOM_ALLOW_FILE", allow_file), \
+             patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file), \
+             patch("coreguard.cli.os.kill") as mock_kill:
+            result = self.runner.invoke(main, ["unblock", "example.com"])
+            assert result.exit_code == 0
+            mock_kill.assert_called_once_with(1234, signal.SIGHUP)
+            assert "Reload signal sent" in result.output
