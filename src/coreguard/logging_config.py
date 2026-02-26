@@ -9,6 +9,7 @@ class QueryLogger:
     def __init__(self, log_path: Path, max_bytes: int = 50 * 1024 * 1024) -> None:
         self.logger = logging.getLogger("coreguard.queries")
         self.logger.setLevel(logging.INFO)
+        self.logger.propagate = False
         # Avoid duplicate handlers on reload
         if not self.logger.handlers:
             handler = RotatingFileHandler(
