@@ -85,8 +85,11 @@ def resolve_upstream(request_data: bytes, config: Config) -> bytes:
         if config.upstream_mode == "doh":
             return resolve_doh(request_data, config.upstream_dns, config.upstream_timeout)
         elif config.upstream_mode == "dot":
+            dot_server = config.upstream_dot_server
+            if dot_server.startswith("http"):
+                logger.warning("DoT server looks like a URL ('%s') — should be a hostname or IP", dot_server)
             return resolve_dot(
-                request_data, config.upstream_dns, timeout=config.upstream_timeout
+                request_data, dot_server, timeout=config.upstream_timeout
             )
         else:
             return resolve_plain(

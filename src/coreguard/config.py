@@ -83,6 +83,7 @@ DEFAULT_FILTER_LISTS = [
 class Config:
     # Upstream DNS
     upstream_dns: str = "https://1.1.1.1/dns-query"
+    upstream_dot_server: str = "1.1.1.1"
     upstream_fallback: str = "1.1.1.1"
     upstream_mode: str = "doh"  # "doh", "dot", "plain"
     upstream_timeout: float = 5.0
@@ -115,6 +116,7 @@ def _config_to_dict(config: Config) -> dict[str, Any]:
     return {
         "upstream": {
             "dns": config.upstream_dns,
+            "dot_server": config.upstream_dot_server,
             "fallback": config.upstream_fallback,
             "mode": config.upstream_mode,
             "timeout": config.upstream_timeout,
@@ -139,6 +141,7 @@ def _dict_to_config(data: dict[str, Any]) -> Config:
     if "upstream" in data:
         u = data["upstream"]
         config.upstream_dns = u.get("dns", config.upstream_dns)
+        config.upstream_dot_server = u.get("dot_server", config.upstream_dot_server)
         config.upstream_fallback = u.get("fallback", config.upstream_fallback)
         config.upstream_mode = u.get("mode", config.upstream_mode)
         config.upstream_timeout = u.get("timeout", config.upstream_timeout)

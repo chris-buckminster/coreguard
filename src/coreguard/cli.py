@@ -517,6 +517,8 @@ def _generate_plist(coreguard_bin: str) -> str:
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>StandardOutPath</key>
     <string>{LOG_FILE}</string>
     <key>StandardErrorPath</key>

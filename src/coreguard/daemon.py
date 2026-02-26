@@ -102,7 +102,7 @@ def main_loop(
     last_update = time.time()
     last_dns_check = time.time()
     last_stats_trim = time.time()
-    dns_check_interval = 300  # 5 minutes
+    dns_check_interval = 60  # 1 minute — fast recovery after sleep/wake
     stats_trim_interval = 3600  # 1 hour
 
     while True:
@@ -123,21 +123,24 @@ def main_loop(
             except Exception as e:
                 logger.warning("Reload failed: %s", e)
 
-        # Periodic DNS health check
+        # Periodic DNS health check — auto-re-apply if DNS has drifted
         if (time.time() - last_dns_check) >= dns_check_interval:
             last_dns_check = time.time()
             try:
-                from coreguard.network import get_active_interfaces, get_current_dns
+                from coreguard.network import get_physical_interfaces, get_current_dns, reapply_dns
                 from coreguard.notify import notify_dns_misconfigured
-                for service in get_active_interfaces():
+                reapply_failed = False
+                for service in get_physical_interfaces():
                     servers = get_current_dns(service)
                     if servers and "127.0.0.1" not in servers:
                         logger.warning(
-                            "DNS for '%s' is not pointing to coreguard: %s",
+                            "DNS for '%s' reset to %s, re-applying",
                             service, servers,
                         )
-                        notify_dns_misconfigured()
-                        break
+                        if not reapply_dns(service):
+                            reapply_failed = True
+                if reapply_failed:
+                    notify_dns_misconfigured()
             except Exception as e:
                 logger.debug("DNS health check failed: %s", e)
 
