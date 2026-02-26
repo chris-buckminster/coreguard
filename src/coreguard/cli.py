@@ -201,6 +201,11 @@ def start(foreground):
         PID_FILE.unlink(missing_ok=True)
         sys.exit(1)
 
+    # Start dashboard
+    from coreguard.dashboard import start_dashboard
+
+    dashboard_server = start_dashboard(config, stats, cache)
+
     # Configure macOS DNS
     set_dns_to_local()
 
@@ -211,6 +216,8 @@ def start(foreground):
 
     if foreground:
         click.echo(f"Coreguard running on {config.listen_address}:{config.listen_port}. Press Ctrl+C to stop.")
+        if dashboard_server:
+            click.echo(f"Dashboard: http://127.0.0.1:{config.dashboard_port}")
 
     # Enter main loop (blocks forever)
     try:

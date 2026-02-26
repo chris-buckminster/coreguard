@@ -125,6 +125,10 @@ class Config:
     cname_check_enabled: bool = True
     cname_max_depth: int = 16
 
+    # Dashboard
+    dashboard_enabled: bool = True
+    dashboard_port: int = 8080
+
 
 def ensure_dirs() -> None:
     """Create all required directories and files."""
@@ -166,6 +170,10 @@ def _config_to_dict(config: Config) -> dict[str, Any]:
         "cname": {
             "check_enabled": config.cname_check_enabled,
             "max_depth": config.cname_max_depth,
+        },
+        "dashboard": {
+            "enabled": config.dashboard_enabled,
+            "port": config.dashboard_port,
         },
     }
 
@@ -220,6 +228,10 @@ def _dict_to_config(data: dict[str, Any]) -> Config:
         cn = data["cname"]
         config.cname_check_enabled = cn.get("check_enabled", config.cname_check_enabled)
         config.cname_max_depth = cn.get("max_depth", config.cname_max_depth)
+    if "dashboard" in data:
+        db = data["dashboard"]
+        config.dashboard_enabled = db.get("enabled", config.dashboard_enabled)
+        config.dashboard_port = db.get("port", config.dashboard_port)
     return config
 
 
