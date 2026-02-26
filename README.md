@@ -98,7 +98,7 @@ sudo .venv/bin/coreguard start --foreground
 # Stop the daemon and restore DNS
 sudo .venv/bin/coreguard stop
 
-# Check if coreguard is running
+# Check if coreguard is running (no sudo required)
 coreguard status
 ```
 
@@ -148,12 +148,12 @@ sudo .venv/bin/coreguard update
 ### Health Check
 
 ```bash
-# Run diagnostics
+# Run diagnostics (no sudo required)
 coreguard doctor
 ```
 
 The `doctor` command checks:
-- Whether the daemon is running
+- Whether the daemon is running (detected via port 53 probe — works without sudo)
 - Whether system DNS is correctly pointing to coreguard
 - Whether port 53 is responding
 - Whether filter lists are cached and up to date
