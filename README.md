@@ -58,18 +58,26 @@ This approach blocks ads and trackers system-wide — across every browser and a
 
 ## Installation
 
+### Homebrew (recommended)
+
 ```bash
-# Clone the repository
+brew tap chris-buckminster/coreguard
+brew install coreguard
+```
+
+The `coreguard` command is added to your PATH automatically. Upgrades are handled by `brew upgrade`.
+
+### From Source
+
+```bash
 git clone https://github.com/chris-buckminster/coreguard.git
 cd coreguard
-
-# Create a virtual environment and install
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
-After installation, the `coreguard` command is available in your shell. When using `sudo`, reference the venv binary directly:
+When installed from source, reference the venv binary with sudo:
 
 ```bash
 sudo .venv/bin/coreguard <command>
@@ -79,7 +87,7 @@ sudo .venv/bin/coreguard <command>
 
 ```bash
 # Start blocking (requires sudo)
-sudo .venv/bin/coreguard start
+sudo coreguard start
 
 # Verify it's working
 dig @127.0.0.1 ads.doubleclick.net   # Should return 0.0.0.0
@@ -89,7 +97,7 @@ dig @127.0.0.1 github.com            # Should return the real IP
 coreguard status
 
 # Stop and restore original DNS settings
-sudo .venv/bin/coreguard stop
+sudo coreguard stop
 ```
 
 ## Usage
@@ -98,13 +106,13 @@ sudo .venv/bin/coreguard stop
 
 ```bash
 # Start as a background daemon
-sudo .venv/bin/coreguard start
+sudo coreguard start
 
 # Start in the foreground (useful for debugging)
-sudo .venv/bin/coreguard start --foreground
+sudo coreguard start --foreground
 
 # Stop the daemon and restore DNS
-sudo .venv/bin/coreguard stop
+sudo coreguard stop
 
 # Check if coreguard is running (no sudo required)
 coreguard status
@@ -114,10 +122,13 @@ coreguard status
 
 ```bash
 # Install as a macOS launchd service
-sudo .venv/bin/coreguard install
+sudo coreguard install
+
+# Or use Homebrew services (if installed via brew)
+sudo brew services start coreguard
 
 # Remove the service
-sudo .venv/bin/coreguard uninstall
+sudo coreguard uninstall
 ```
 
 Once installed, coreguard starts automatically when your Mac boots and will restart itself if it crashes.
@@ -126,16 +137,16 @@ Once installed, coreguard starts automatically when your Mac boots and will rest
 
 ```bash
 # Allow a domain (prevents it from being blocked)
-sudo .venv/bin/coreguard allow example.com
+sudo coreguard allow example.com
 
 # Block a domain manually
-sudo .venv/bin/coreguard block annoying-site.com
+sudo coreguard block annoying-site.com
 
 # Unblock a domain (adds to allowlist + triggers immediate reload)
-sudo .venv/bin/coreguard unblock broken-site.com
+sudo coreguard unblock broken-site.com
 
 # Apply changes to a running instance
-sudo .venv/bin/coreguard update
+sudo coreguard update
 ```
 
 Allowlist entries cover the domain and all of its subdomains. For example, allowing `example.com` will also allow `cdn.example.com`, `api.example.com`, and so on.
@@ -160,13 +171,13 @@ Leading `*.` matches any number of subdomain labels. A `*` elsewhere matches wit
 coreguard lists
 
 # Add a new filter list
-sudo .venv/bin/coreguard add-list https://example.com/blocklist.txt --name my-list
+sudo coreguard add-list https://example.com/blocklist.txt --name my-list
 
 # Remove a filter list
-sudo .venv/bin/coreguard remove-list my-list
+sudo coreguard remove-list my-list
 
 # Force an immediate update of all lists
-sudo .venv/bin/coreguard update
+sudo coreguard update
 ```
 
 ### Health Check
@@ -386,7 +397,7 @@ On macOS, `mDNSResponder` may occupy port 53. Coreguard is designed to coexist w
 If coreguard exits uncleanly, your DNS may still point to `127.0.0.1`. When installed as a launchd service, coreguard will automatically restart within 10 seconds and resume normal operation. For manual installations, run:
 
 ```bash
-sudo .venv/bin/coreguard stop
+sudo coreguard stop
 ```
 
 This will detect the backup file and restore your original DNS settings even if the daemon isn't running. Coreguard also automatically restores stale DNS settings on the next startup.
@@ -396,14 +407,14 @@ This will detect the backup file and restore your original DNS settings even if 
 The site may be on a blocklist. The quickest fix:
 
 ```bash
-sudo .venv/bin/coreguard unblock broken-site.com   # Adds to allowlist + reloads immediately
+sudo coreguard unblock broken-site.com   # Adds to allowlist + reloads immediately
 ```
 
 To investigate first:
 
 ```bash
-coreguard log -n 50                          # Look for the domain being blocked
-sudo .venv/bin/coreguard unblock the-domain  # Unblock it
+coreguard log -n 50                    # Look for the domain being blocked
+sudo coreguard unblock the-domain      # Unblock it
 ```
 
 ### Verifying coreguard is active
