@@ -80,11 +80,24 @@ DEFAULT_FILTER_LISTS = [
 
 
 @dataclass
+class UpstreamProvider:
+    name: str = "cloudflare"
+    doh: str = "https://1.1.1.1/dns-query"
+    dot: str = "1.1.1.1"
+    plain: str = "1.1.1.1"
+
+
+DEFAULT_UPSTREAM_PROVIDERS = [
+    UpstreamProvider("cloudflare", "https://1.1.1.1/dns-query", "1.1.1.1", "1.1.1.1"),
+    UpstreamProvider("google", "https://8.8.8.8/dns-query", "8.8.8.8", "8.8.8.8"),
+    UpstreamProvider("quad9", "https://9.9.9.9:5053/dns-query", "9.9.9.9", "9.9.9.9"),
+]
+
+
+@dataclass
 class Config:
     # Upstream DNS
-    upstream_dns: str = "https://1.1.1.1/dns-query"
-    upstream_dot_server: str = "1.1.1.1"
-    upstream_fallback: str = "1.1.1.1"
+    upstream_providers: list = field(default_factory=lambda: list(DEFAULT_UPSTREAM_PROVIDERS))
     upstream_mode: str = "doh"  # "doh", "dot", "plain"
     upstream_timeout: float = 5.0
 
@@ -125,11 +138,12 @@ def ensure_dirs() -> None:
 def _config_to_dict(config: Config) -> dict[str, Any]:
     return {
         "upstream": {
-            "dns": config.upstream_dns,
-            "dot_server": config.upstream_dot_server,
-            "fallback": config.upstream_fallback,
             "mode": config.upstream_mode,
             "timeout": config.upstream_timeout,
+            "providers": [
+                {"name": p.name, "doh": p.doh, "dot": p.dot, "plain": p.plain}
+                for p in config.upstream_providers
+            ],
         },
         "server": {
             "listen_address": config.listen_address,
@@ -160,11 +174,28 @@ def _dict_to_config(data: dict[str, Any]) -> Config:
     config = Config()
     if "upstream" in data:
         u = data["upstream"]
-        config.upstream_dns = u.get("dns", config.upstream_dns)
-        config.upstream_dot_server = u.get("dot_server", config.upstream_dot_server)
-        config.upstream_fallback = u.get("fallback", config.upstream_fallback)
         config.upstream_mode = u.get("mode", config.upstream_mode)
         config.upstream_timeout = u.get("timeout", config.upstream_timeout)
+        if "providers" in u:
+            config.upstream_providers = [
+                UpstreamProvider(
+                    name=p.get("name", "custom"),
+                    doh=p.get("doh", ""),
+                    dot=p.get("dot", ""),
+                    plain=p.get("plain", ""),
+                )
+                for p in u["providers"]
+            ]
+        elif "dns" in u:
+            # Backward compat: old single-provider format
+            config.upstream_providers = [
+                UpstreamProvider(
+                    name="primary",
+                    doh=u.get("dns", "https://1.1.1.1/dns-query"),
+                    dot=u.get("dot_server", "1.1.1.1"),
+                    plain=u.get("fallback", "1.1.1.1"),
+                )
+            ]
     if "server" in data:
         s = data["server"]
         config.listen_address = s.get("listen_address", config.listen_address)

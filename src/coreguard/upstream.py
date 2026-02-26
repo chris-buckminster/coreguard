@@ -80,26 +80,34 @@ def _recv_exact(sock: ssl.SSLSocket, n: int) -> bytes:
 
 
 def resolve_upstream(request_data: bytes, config: Config) -> bytes:
-    """Route to the appropriate upstream resolver with fallback."""
-    try:
-        if config.upstream_mode == "doh":
-            return resolve_doh(request_data, config.upstream_dns, config.upstream_timeout)
-        elif config.upstream_mode == "dot":
-            dot_server = config.upstream_dot_server
-            if dot_server.startswith("http"):
-                logger.warning("DoT server looks like a URL ('%s') — should be a hostname or IP", dot_server)
-            return resolve_dot(
-                request_data, dot_server, timeout=config.upstream_timeout
-            )
-        else:
-            return resolve_plain(
-                request_data, config.upstream_fallback, timeout=config.upstream_timeout
-            )
-    except Exception as e:
-        # Fall back to plain DNS if DoH/DoT fails
-        if config.upstream_mode != "plain":
-            logger.warning("Upstream %s failed (%s), falling back to plain DNS", config.upstream_mode, e)
-            return resolve_plain(
-                request_data, config.upstream_fallback, timeout=config.upstream_timeout
-            )
-        raise
+    """Route to upstream resolvers with multi-provider failover.
+
+    Tries each provider in order with the configured mode. If all fail,
+    falls back to plain DNS with each provider before giving up.
+    """
+    errors: list[Exception] = []
+
+    # Try each provider with the configured mode
+    for provider in config.upstream_providers:
+        try:
+            if config.upstream_mode == "doh":
+                return resolve_doh(request_data, provider.doh, config.upstream_timeout)
+            elif config.upstream_mode == "dot":
+                return resolve_dot(request_data, provider.dot, timeout=config.upstream_timeout)
+            else:
+                return resolve_plain(request_data, provider.plain, timeout=config.upstream_timeout)
+        except Exception as e:
+            logger.warning("Provider %s (%s) failed: %s", provider.name, config.upstream_mode, e)
+            errors.append(e)
+
+    # All providers failed with primary mode — try plain DNS fallback
+    if config.upstream_mode != "plain":
+        for provider in config.upstream_providers:
+            try:
+                logger.warning("Falling back to plain DNS via %s", provider.name)
+                return resolve_plain(request_data, provider.plain, timeout=config.upstream_timeout)
+            except Exception as e:
+                errors.append(e)
+
+    # Everything failed
+    raise errors[-1] if errors else RuntimeError("No upstream providers configured")
