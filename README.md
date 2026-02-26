@@ -53,7 +53,7 @@ This approach blocks ads and trackers system-wide — across every browser and a
 ## Requirements
 
 - macOS 10.15 (Catalina) or later
-- Python 3.9+
+- Python 3.10+
 - Root privileges (required for binding port 53 and configuring system DNS)
 
 ## Installation
@@ -160,10 +160,10 @@ Leading `*.` matches any number of subdomain labels. A `*` elsewhere matches wit
 coreguard lists
 
 # Add a new filter list
-coreguard add-list https://example.com/blocklist.txt --name my-list
+sudo .venv/bin/coreguard add-list https://example.com/blocklist.txt --name my-list
 
 # Remove a filter list
-coreguard remove-list my-list
+sudo .venv/bin/coreguard remove-list my-list
 
 # Force an immediate update of all lists
 sudo .venv/bin/coreguard update
