@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -14,6 +15,9 @@ from coreguard.stats import Stats
 from coreguard.upstream import close_doh_client
 
 logger = logging.getLogger("coreguard.daemon")
+
+# Flag set by SIGHUP handler to trigger reload in main loop (signal-safe)
+_reload_requested = threading.Event()
 
 
 def daemonize() -> None:
@@ -47,15 +51,14 @@ def daemonize() -> None:
     os.dup2(devnull, 2)
     os.close(devnull)
 
-    # Write PID file
+
+def write_pid_file() -> None:
+    """Write current PID to file."""
     PID_FILE.write_text(str(os.getpid()))
     atexit.register(lambda: PID_FILE.unlink(missing_ok=True))
 
 
-def setup_signal_handlers(
-    cleanup_fn: callable,
-    reload_fn: callable | None = None,
-) -> None:
+def setup_signal_handlers(cleanup_fn: callable) -> None:
     """Set up signal handlers for graceful shutdown and reload."""
 
     def shutdown_handler(signum, frame):
@@ -64,14 +67,12 @@ def setup_signal_handlers(
         sys.exit(0)
 
     def reload_handler(signum, frame):
-        logger.info("Received SIGHUP, reloading filter lists...")
-        if reload_fn:
-            reload_fn()
+        # Only set a flag — no I/O in signal context
+        _reload_requested.set()
 
     signal.signal(signal.SIGTERM, shutdown_handler)
     signal.signal(signal.SIGINT, shutdown_handler)
-    if reload_fn:
-        signal.signal(signal.SIGHUP, reload_handler)
+    signal.signal(signal.SIGHUP, reload_handler)
 
 
 def cleanup(udp_server, tcp_server) -> None:
@@ -96,12 +97,13 @@ def main_loop(
     domain_filter: DomainFilter,
     stats: Stats,
 ) -> None:
-    """Main daemon loop: periodic list updates and stats persistence."""
+    """Main daemon loop: periodic list updates, stats persistence, health checks."""
     update_interval = config.update_interval_hours * 3600
     last_update = time.time()
-
     last_dns_check = time.time()
-    dns_check_interval = 300  # Check DNS health every 5 minutes
+    last_stats_trim = time.time()
+    dns_check_interval = 300  # 5 minutes
+    stats_trim_interval = 3600  # 1 hour
 
     while True:
         time.sleep(60)
@@ -112,6 +114,15 @@ def main_loop(
         except Exception:
             pass
 
+        # Handle SIGHUP reload (safe — runs in main loop, not signal context)
+        if _reload_requested.is_set():
+            _reload_requested.clear()
+            try:
+                logger.info("Reloading filter lists (SIGHUP)...")
+                update_all_lists(config, domain_filter)
+            except Exception as e:
+                logger.warning("Reload failed: %s", e)
+
         # Periodic DNS health check
         if (time.time() - last_dns_check) >= dns_check_interval:
             last_dns_check = time.time()
@@ -121,11 +132,19 @@ def main_loop(
                 for service in get_active_interfaces():
                     servers = get_current_dns(service)
                     if servers and "127.0.0.1" not in servers:
-                        logger.warning("DNS for '%s' is not pointing to coreguard: %s", service, servers)
+                        logger.warning(
+                            "DNS for '%s' is not pointing to coreguard: %s",
+                            service, servers,
+                        )
                         notify_dns_misconfigured()
                         break
             except Exception as e:
                 logger.debug("DNS health check failed: %s", e)
+
+        # Trim stats counters to prevent unbounded memory growth
+        if (time.time() - last_stats_trim) >= stats_trim_interval:
+            last_stats_trim = time.time()
+            stats.trim()
 
         # Auto-update filter lists
         if update_interval > 0 and (time.time() - last_update) >= update_interval:
@@ -153,8 +172,12 @@ def process_exists(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        # PermissionError means the process exists but we can't signal it
+        # (e.g., root-owned daemon checked by non-root user)
+        return True
 
 
 def is_running() -> bool:

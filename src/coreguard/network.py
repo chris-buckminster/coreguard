@@ -6,6 +6,8 @@ from coreguard.config import DNS_BACKUP_FILE
 
 logger = logging.getLogger("coreguard.network")
 
+SUBPROCESS_TIMEOUT = 10  # seconds
+
 
 def get_active_interfaces() -> list[str]:
     """Get names of active network services on macOS."""
@@ -13,6 +15,7 @@ def get_active_interfaces() -> list[str]:
         ["networksetup", "-listallnetworkservices"],
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
     services = []
     for line in result.stdout.splitlines()[1:]:  # Skip "An asterisk..." header
@@ -28,6 +31,7 @@ def get_current_dns(service: str) -> list[str]:
         ["networksetup", "-getdnsservers", service],
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
     output = result.stdout.strip()
     if "no DNS" in output.lower() or "there aren't any" in output.lower():
@@ -53,10 +57,19 @@ def set_dns_to_local() -> None:
                 ["networksetup", "-setdnsservers", service, "127.0.0.1"],
                 check=True,
                 capture_output=True,
+                timeout=SUBPROCESS_TIMEOUT,
             )
             logger.info("Set DNS for '%s' to 127.0.0.1", service)
         except subprocess.CalledProcessError as e:
             logger.warning("Failed to set DNS for '%s': %s", service, e)
+        except subprocess.TimeoutExpired:
+            logger.warning("Timed out setting DNS for '%s'", service)
+
+    # Verify DNS was actually set
+    for service in get_active_interfaces():
+        servers = get_current_dns(service)
+        if servers and "127.0.0.1" not in servers:
+            logger.warning("DNS for '%s' did not apply correctly: %s", service, servers)
 
 
 def restore_dns() -> None:
@@ -65,7 +78,24 @@ def restore_dns() -> None:
         logger.warning("No DNS backup file found, cannot restore")
         return
 
-    backup = json.loads(DNS_BACKUP_FILE.read_text())
+    try:
+        backup = json.loads(DNS_BACKUP_FILE.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("DNS backup file is corrupt: %s", e)
+        # Fall back to resetting all interfaces to DHCP
+        for service in get_active_interfaces():
+            try:
+                subprocess.run(
+                    ["networksetup", "-setdnsservers", service, "Empty"],
+                    check=True,
+                    capture_output=True,
+                    timeout=SUBPROCESS_TIMEOUT,
+                )
+            except Exception:
+                pass
+        DNS_BACKUP_FILE.unlink(missing_ok=True)
+        return
+
     for service, servers in backup.items():
         try:
             if servers:
@@ -73,6 +103,7 @@ def restore_dns() -> None:
                     ["networksetup", "-setdnsservers", service] + servers,
                     check=True,
                     capture_output=True,
+                    timeout=SUBPROCESS_TIMEOUT,
                 )
             else:
                 # Reset to DHCP-provided DNS
@@ -80,10 +111,13 @@ def restore_dns() -> None:
                     ["networksetup", "-setdnsservers", service, "Empty"],
                     check=True,
                     capture_output=True,
+                    timeout=SUBPROCESS_TIMEOUT,
                 )
             logger.info("Restored DNS for '%s'", service)
         except subprocess.CalledProcessError as e:
             logger.warning("Failed to restore DNS for '%s': %s", service, e)
+        except subprocess.TimeoutExpired:
+            logger.warning("Timed out restoring DNS for '%s'", service)
 
     DNS_BACKUP_FILE.unlink(missing_ok=True)
     logger.info("DNS settings restored")
@@ -95,8 +129,8 @@ def restore_dns() -> None:
 def flush_dns_cache() -> None:
     """Flush the macOS DNS cache."""
     try:
-        subprocess.run(["dscacheutil", "-flushcache"], capture_output=True)
-        subprocess.run(["killall", "-HUP", "mDNSResponder"], capture_output=True)
+        subprocess.run(["dscacheutil", "-flushcache"], capture_output=True, timeout=SUBPROCESS_TIMEOUT)
+        subprocess.run(["killall", "-HUP", "mDNSResponder"], capture_output=True, timeout=SUBPROCESS_TIMEOUT)
         logger.info("DNS cache flushed")
     except Exception as e:
         logger.warning("Failed to flush DNS cache: %s", e)

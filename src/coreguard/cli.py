@@ -3,6 +3,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from functools import partial
 from pathlib import Path
 
@@ -13,7 +14,9 @@ from coreguard.config import (
     CONFIG_DIR,
     CUSTOM_ALLOW_FILE,
     CUSTOM_BLOCK_FILE,
+    DNS_BACKUP_FILE,
     LOG_FILE,
+    PID_FILE,
     STATS_FILE,
     Config,
     ensure_dirs,
@@ -28,13 +31,27 @@ from coreguard.daemon import (
     process_exists,
     read_pid,
     setup_signal_handlers,
+    write_pid_file,
 )
 from coreguard.dns_server import start_dns_server
 from coreguard.filtering import DomainFilter
 from coreguard.logging_config import QueryLogger
-from coreguard.network import flush_dns_cache, get_active_interfaces, get_current_dns, restore_dns, set_dns_to_local
-from coreguard.notify import notify_dns_misconfigured, notify_lists_update_failed, notify_startup_failure
+from coreguard.network import (
+    flush_dns_cache,
+    get_active_interfaces,
+    get_current_dns,
+    restore_dns,
+    set_dns_to_local,
+)
+from coreguard.notify import (
+    notify_dns_misconfigured,
+    notify_lists_update_failed,
+    notify_startup_failure,
+)
 from coreguard.stats import Stats
+
+LAUNCHD_PLIST_PATH = Path("/Library/LaunchDaemons/com.coreguard.daemon.plist")
+LAUNCHD_LABEL = "com.coreguard.daemon"
 
 
 def _setup_logging(foreground: bool) -> None:
@@ -57,6 +74,49 @@ def _setup_logging(foreground: bool) -> None:
         handlers.append(stream_handler)
 
     logging.basicConfig(level=log_level, handlers=handlers, force=True)
+
+
+def _is_launchd_loaded() -> bool:
+    """Check if the launchd service is currently loaded."""
+    result = subprocess.run(
+        ["launchctl", "list", LAUNCHD_LABEL],
+        capture_output=True,
+        timeout=5,
+    )
+    return result.returncode == 0
+
+
+def _stop_running_daemon() -> bool:
+    """Stop any running coreguard daemon. Returns True if something was stopped."""
+    stopped = False
+
+    # Try launchctl first if service is loaded
+    if LAUNCHD_PLIST_PATH.exists() and _is_launchd_loaded():
+        subprocess.run(
+            ["launchctl", "stop", LAUNCHD_LABEL],
+            capture_output=True,
+            timeout=10,
+        )
+        # Give it a moment to exit
+        time.sleep(1)
+        stopped = True
+
+    # Also check PID file for manually started daemons
+    pid = read_pid()
+    if pid and process_exists(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            # Wait for process to exit
+            for _ in range(10):
+                if not process_exists(pid):
+                    break
+                time.sleep(0.5)
+            stopped = True
+        except ProcessLookupError:
+            pass
+
+    PID_FILE.unlink(missing_ok=True)
+    return stopped
 
 
 @click.group()
@@ -82,16 +142,15 @@ def start(foreground):
     config = load_config()
     domain_filter = DomainFilter()
 
-    # Restore DNS if stuck on 127.0.0.1 from a previous run,
-    # otherwise filter list downloads will fail
-    from coreguard.config import DNS_BACKUP_FILE
+    # Restore DNS if stuck from a previous run
     if DNS_BACKUP_FILE.exists():
         click.echo("Restoring DNS from previous session...")
         restore_dns()
 
     click.echo("Loading filter lists...")
     count = update_all_lists(config, domain_filter)
-    click.echo(f"Loaded {count:,} blocked domains from {sum(1 for f in config.filter_lists if f.get('enabled', True))} lists.")
+    enabled_count = sum(1 for f in config.filter_lists if f.get("enabled", True))
+    click.echo(f"Loaded {count:,} blocked domains from {enabled_count} lists.")
 
     stats = Stats()
     query_logger = QueryLogger(LOG_FILE, max_bytes=config.log_max_size_mb * 1024 * 1024)
@@ -99,10 +158,18 @@ def start(foreground):
     if not foreground:
         click.echo("Starting coreguard daemon...")
         daemonize()
-    else:
-        # Write PID file in foreground mode too (for doctor/status checks)
-        from coreguard.config import PID_FILE
-        PID_FILE.write_text(str(os.getpid()))
+
+    # Write PID file (both daemon and foreground mode)
+    write_pid_file()
+
+    # Set up signal handlers BEFORE starting DNS server and changing DNS
+    # so we can always clean up if interrupted
+    # (placeholder cleanup_fn — will be replaced after servers start)
+    def early_cleanup():
+        restore_dns()
+        PID_FILE.unlink(missing_ok=True)
+
+    setup_signal_handlers(early_cleanup)
 
     # Start DNS server
     try:
@@ -112,15 +179,16 @@ def start(foreground):
         click.echo(f"Error: {msg}")
         click.echo("Is port 53 already in use? Check with: sudo lsof -i :53")
         notify_startup_failure(msg)
+        PID_FILE.unlink(missing_ok=True)
         sys.exit(1)
 
     # Configure macOS DNS
     set_dns_to_local()
 
-    # Set up signal handlers
+    # Replace signal handlers with full cleanup now that servers are running
     cleanup_fn = partial(cleanup, udp_server, tcp_server)
     reload_fn = partial(update_all_lists, config, domain_filter)
-    setup_signal_handlers(cleanup_fn, reload_fn)
+    setup_signal_handlers(cleanup_fn)
 
     if foreground:
         click.echo(f"Coreguard running on {config.listen_address}:{config.listen_port}. Press Ctrl+C to stop.")
@@ -130,9 +198,6 @@ def start(foreground):
         main_loop(config, domain_filter, stats)
     except (KeyboardInterrupt, SystemExit):
         cleanup_fn()
-    finally:
-        from coreguard.config import PID_FILE
-        PID_FILE.unlink(missing_ok=True)
 
 
 @main.command()
@@ -142,27 +207,15 @@ def stop():
         click.echo("Error: requires root privileges. Run with: sudo coreguard stop")
         sys.exit(1)
 
-    pid = read_pid()
-    if pid is None or not process_exists(pid):
-        # Still try to restore DNS in case of unclean shutdown
-        restore_dns()
-        click.echo("Coreguard is not running.")
-        if pid is not None:
-            from coreguard.config import PID_FILE
-            PID_FILE.unlink(missing_ok=True)
-        sys.exit(0)
+    was_running = _stop_running_daemon()
 
-    # Restore DNS before killing the daemon
+    # Always restore DNS (handles unclean shutdowns too)
     restore_dns()
 
-    # Send SIGTERM to daemon
-    try:
-        os.kill(pid, signal.SIGTERM)
+    if was_running:
         click.echo("Coreguard stopped. DNS settings restored.")
-    except ProcessLookupError:
-        click.echo("Coreguard process not found. DNS settings restored.")
-        from coreguard.config import PID_FILE
-        PID_FILE.unlink(missing_ok=True)
+    else:
+        click.echo("Coreguard was not running. DNS settings restored.")
 
 
 @main.command()
@@ -206,7 +259,7 @@ def update():
         try:
             os.kill(pid, signal.SIGHUP)
             click.echo("Sent reload signal to running daemon.")
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
 
 
@@ -261,7 +314,11 @@ def lists():
     config = load_config()
     click.echo("Filter lists:")
     for flist in config.filter_lists:
-        status_str = click.style("enabled", fg="green") if flist.get("enabled", True) else click.style("disabled", fg="red")
+        status_str = (
+            click.style("enabled", fg="green")
+            if flist.get("enabled", True)
+            else click.style("disabled", fg="red")
+        )
         click.echo(f"  [{status_str}] {flist['name']}")
         click.echo(f"           {flist['url']}")
 
@@ -272,12 +329,10 @@ def lists():
 def add_list(url, name):
     """Add a new filter list source by URL."""
     if name is None:
-        # Derive name from URL
         name = url.rstrip("/").split("/")[-1].split(".")[0]
 
     config = load_config()
 
-    # Check for duplicate URLs
     for flist in config.filter_lists:
         if flist["url"] == url:
             click.echo(f"List already exists: {flist['name']}")
@@ -327,10 +382,16 @@ def doctor():
         if servers and "127.0.0.1" in servers:
             click.echo(click.style("[OK]", fg="green") + f"  DNS for '{service}' points to 127.0.0.1")
         elif not servers:
-            click.echo(click.style("[WARN]", fg="yellow") + f"  DNS for '{service}' uses DHCP defaults (not coreguard)")
+            click.echo(
+                click.style("[WARN]", fg="yellow")
+                + f"  DNS for '{service}' uses DHCP defaults (not coreguard)"
+            )
             dns_ok = False
         else:
-            click.echo(click.style("[FAIL]", fg="red") + f"  DNS for '{service}' points to {', '.join(servers)} (not coreguard)")
+            click.echo(
+                click.style("[FAIL]", fg="red")
+                + f"  DNS for '{service}' points to {', '.join(servers)} (not coreguard)"
+            )
             dns_ok = False
     if not dns_ok:
         issues.append("System DNS is not pointing to coreguard. Restart with: sudo coreguard start")
@@ -338,10 +399,15 @@ def doctor():
     # 3. Check if port 53 is responding
     try:
         import socket
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(2)
-        # Send a minimal DNS query for localhost
-        sock.sendto(b'\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x09localhost\x00\x00\x01\x00\x01', ("127.0.0.1", 53))
+        # Send a minimal DNS query
+        sock.sendto(
+            b"\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+            b"\x09localhost\x00\x00\x01\x00\x01",
+            ("127.0.0.1", 53),
+        )
         sock.recvfrom(512)
         sock.close()
         click.echo(click.style("[OK]", fg="green") + "  Port 53 is responding on 127.0.0.1")
@@ -351,28 +417,43 @@ def doctor():
 
     # 4. Check filter lists
     from coreguard.config import BLOCKLISTS_DIR
+
     cached_lists = list(BLOCKLISTS_DIR.glob("*.txt"))
     enabled_count = sum(1 for f in config.filter_lists if f.get("enabled", True))
     if cached_lists:
-        # Check age of newest cached list
         newest = max(cached_lists, key=lambda p: p.stat().st_mtime)
-        import time
         age_hours = (time.time() - newest.stat().st_mtime) / 3600
         if age_hours < 48:
-            click.echo(click.style("[OK]", fg="green") + f"  {len(cached_lists)} filter lists cached (last update: {age_hours:.0f}h ago)")
+            click.echo(
+                click.style("[OK]", fg="green")
+                + f"  {len(cached_lists)} filter lists cached (last update: {age_hours:.0f}h ago)"
+            )
         else:
-            click.echo(click.style("[WARN]", fg="yellow") + f"  Filter lists are stale (last update: {age_hours:.0f}h ago)")
+            click.echo(
+                click.style("[WARN]", fg="yellow")
+                + f"  Filter lists are stale (last update: {age_hours:.0f}h ago)"
+            )
             issues.append("Filter lists haven't been updated recently. Run: sudo coreguard update")
     else:
         click.echo(click.style("[FAIL]", fg="red") + "  No cached filter lists found")
         issues.append("No filter lists downloaded. Run: sudo coreguard update")
 
-    click.echo(click.style("[INFO]", fg="blue") + f"  {enabled_count} filter lists enabled, {len(config.filter_lists)} total configured")
+    click.echo(
+        click.style("[INFO]", fg="blue")
+        + f"  {enabled_count} filter lists enabled, {len(config.filter_lists)} total configured"
+    )
 
     # 5. Check launchd service
-    launchd_path = Path("/Library/LaunchDaemons/com.coreguard.daemon.plist")
-    if launchd_path.exists():
-        click.echo(click.style("[OK]", fg="green") + "  Launchd service installed (auto-start on boot)")
+    if LAUNCHD_PLIST_PATH.exists():
+        if _is_launchd_loaded():
+            click.echo(
+                click.style("[OK]", fg="green") + "  Launchd service installed and loaded (auto-start on boot)"
+            )
+        else:
+            click.echo(
+                click.style("[WARN]", fg="yellow") + "  Launchd plist exists but service is not loaded"
+            )
+            issues.append("Launchd service not loaded. Run: sudo coreguard install")
     else:
         click.echo(click.style("[INFO]", fg="blue") + "  Launchd service not installed (no auto-start)")
 
@@ -393,17 +474,13 @@ def doctor():
             click.echo(f"  - {issue}")
 
 
-LAUNCHD_PLIST_PATH = Path("/Library/LaunchDaemons/com.coreguard.daemon.plist")
-
-
 def _get_coreguard_bin() -> str:
     """Find the coreguard executable path."""
     import shutil
-    # Check the venv we're running from first
+
     current_bin = Path(sys.executable).parent / "coreguard"
     if current_bin.exists():
         return str(current_bin)
-    # Fall back to PATH lookup
     found = shutil.which("coreguard")
     if found:
         return found
@@ -417,7 +494,7 @@ def _generate_plist(coreguard_bin: str) -> str:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.coreguard.daemon</string>
+    <string>{LAUNCHD_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{coreguard_bin}</string>
@@ -450,17 +527,35 @@ def install():
         click.echo(f"Error: {e}")
         sys.exit(1)
 
+    # Stop any running instance first
+    if is_running():
+        click.echo("Stopping running instance...")
+        _stop_running_daemon()
+        restore_dns()
+
+    # Unload existing service if present
+    if LAUNCHD_PLIST_PATH.exists():
+        subprocess.run(["launchctl", "unload", str(LAUNCHD_PLIST_PATH)], capture_output=True, timeout=10)
+
     plist_content = _generate_plist(coreguard_bin)
     LAUNCHD_PLIST_PATH.write_text(plist_content)
 
-    # Set correct ownership and permissions
     subprocess.run(["chown", "root:wheel", str(LAUNCHD_PLIST_PATH)], check=True)
     subprocess.run(["chmod", "644", str(LAUNCHD_PLIST_PATH)], check=True)
 
     # Load the service
-    subprocess.run(["launchctl", "load", str(LAUNCHD_PLIST_PATH)], check=True)
+    result = subprocess.run(
+        ["launchctl", "load", str(LAUNCHD_PLIST_PATH)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        click.echo(f"Error: launchctl load failed: {result.stderr.strip()}")
+        LAUNCHD_PLIST_PATH.unlink(missing_ok=True)
+        sys.exit(1)
 
-    click.echo(f"Coreguard installed as system service.")
+    click.echo("Coreguard installed as system service.")
     click.echo(f"  Executable: {coreguard_bin}")
     click.echo(f"  Plist: {LAUNCHD_PLIST_PATH}")
     click.echo("Coreguard will now start automatically on boot.")
@@ -477,11 +572,20 @@ def uninstall():
         click.echo("Coreguard is not installed as a system service.")
         return
 
-    # Unload the service
-    subprocess.run(["launchctl", "unload", str(LAUNCHD_PLIST_PATH)], capture_output=True)
+    # Unload the service (this stops the process)
+    subprocess.run(
+        ["launchctl", "unload", str(LAUNCHD_PLIST_PATH)],
+        capture_output=True,
+        timeout=10,
+    )
 
-    # Restore DNS in case the service was running
+    # Wait for process to exit
+    time.sleep(1)
+
+    # Restore DNS
     restore_dns()
 
+    # Clean up
     LAUNCHD_PLIST_PATH.unlink(missing_ok=True)
+    PID_FILE.unlink(missing_ok=True)
     click.echo("Coreguard system service removed. It will no longer start on boot.")

@@ -4,8 +4,15 @@ import subprocess
 logger = logging.getLogger("coreguard.notify")
 
 
+def _escape_applescript(s: str) -> str:
+    """Escape a string for safe use in AppleScript."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def send_notification(title: str, message: str, sound: bool = True) -> None:
     """Send a macOS notification center alert via osascript."""
+    title = _escape_applescript(title)
+    message = _escape_applescript(message)
     sound_str = ', sound name "Basso"' if sound else ""
     script = f'display notification "{message}" with title "{title}"{sound_str}'
     try:

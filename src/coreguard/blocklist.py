@@ -103,10 +103,10 @@ def detect_and_parse(content: str) -> tuple[set[str], set[str]]:
 
 def _resolve_via_upstream(hostname: str, upstream: str = "1.1.1.1") -> str:
     """Resolve a hostname using a specific DNS server, bypassing system DNS."""
+    import os
     import struct
 
-    # Build a minimal DNS query for the hostname
-    import os
+    # Build a minimal DNS query
     tx_id = os.urandom(2)
     flags = b'\x01\x00'  # Standard query, recursion desired
     counts = struct.pack('!4H', 1, 0, 0, 0)  # 1 question
@@ -122,24 +122,40 @@ def _resolve_via_upstream(hostname: str, upstream: str = "1.1.1.1") -> str:
     try:
         sock.sendto(query, (upstream, 53))
         data, _ = sock.recvfrom(4096)
-        # Parse the answer section — skip header (12 bytes) and question section
-        offset = 12
-        # Skip question section
-        while data[offset] != 0:
-            offset += data[offset] + 1
-        offset += 5  # null byte + qtype (2) + qclass (2)
-        # Read answers
+        data_len = len(data)
+
+        if data_len < 12:
+            raise RuntimeError("DNS response too short")
+
+        # Parse header
         answer_count = struct.unpack('!H', data[6:8])[0]
-        for _ in range(answer_count):
-            # Skip name (may be compressed)
+
+        # Skip question section (after 12-byte header)
+        offset = 12
+        while offset < data_len and data[offset] != 0:
+            label_len = data[offset]
+            offset += label_len + 1
+        offset += 5  # null byte + qtype (2) + qclass (2)
+
+        # Parse answer records
+        for _ in range(min(answer_count, 64)):  # Cap iterations
+            if offset + 2 > data_len:
+                break
+            # Skip name (may be pointer-compressed)
             if data[offset] & 0xC0 == 0xC0:
                 offset += 2
             else:
-                while data[offset] != 0:
+                while offset < data_len and data[offset] != 0:
                     offset += data[offset] + 1
-                offset += 1
+                offset += 1  # null terminator
+
+            if offset + 10 > data_len:
+                break
             rtype, rclass, ttl, rdlength = struct.unpack('!HHiH', data[offset:offset + 10])
             offset += 10
+
+            if offset + rdlength > data_len:
+                break
             if rtype == 1 and rdlength == 4:  # A record
                 ip = '.'.join(str(b) for b in data[offset:offset + 4])
                 return ip
