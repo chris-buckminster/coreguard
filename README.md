@@ -31,15 +31,19 @@ This approach blocks ads and trackers system-wide — across every browser and a
 
 - **System-wide blocking** — covers all browsers and applications, not just one
 - **Encrypted upstream DNS** — queries forwarded via DNS-over-HTTPS (DoH) by default, with DoT and plain DNS options
+- **DNS response caching** — local TTL-aware cache makes repeat queries near-instant
+- **CNAME flattening** — detects and blocks trackers that hide behind CNAME cloaking
+- **Wildcard rules** — pattern matching in custom lists (`*.ads.com`, `ad*.example.com`)
 - **11 filter list sources** — ships with curated lists covering ads, trackers, malware, and phishing
 - **Automatic updates** — filter lists refresh every 24 hours (configurable)
 - **Allowlist and blocklist** — per-domain overrides with a single command
+- **One-step unblock** — `unblock` command adds to allowlist and triggers immediate reload
 - **Auto-start on boot** — install as a macOS launchd service with a single command
 - **Health monitoring** — macOS notifications for failures, plus a `doctor` command for diagnostics
 - **VPN-safe** — only modifies DNS on physical interfaces (Wi-Fi, Ethernet, USB), leaving VPN tunnels untouched
 - **Self-healing DNS** — automatically re-applies DNS settings after sleep/wake or network changes (checked every 60 seconds)
 - **Live query logging** — see exactly what's being blocked in real time
-- **Statistics** — track total queries, block rate, and top blocked domains
+- **Statistics** — track total queries, block rate, cache hit rate, and top blocked domains
 - **Graceful DNS restore** — original DNS settings are backed up and restored on stop
 - **Foreground mode** — run interactively for debugging and testing
 - **Minimal footprint** — pure Python, no background services beyond the daemon itself
@@ -120,16 +124,32 @@ Once installed, coreguard starts automatically when your Mac boots and will rest
 
 ```bash
 # Allow a domain (prevents it from being blocked)
-coreguard allow example.com
+sudo .venv/bin/coreguard allow example.com
 
 # Block a domain manually
-coreguard block annoying-site.com
+sudo .venv/bin/coreguard block annoying-site.com
+
+# Unblock a domain (adds to allowlist + triggers immediate reload)
+sudo .venv/bin/coreguard unblock broken-site.com
 
 # Apply changes to a running instance
 sudo .venv/bin/coreguard update
 ```
 
-Allowlist entries cover the domain and all of its subdomains. For example, `coreguard allow example.com` will also allow `cdn.example.com`, `api.example.com`, and so on.
+Allowlist entries cover the domain and all of its subdomains. For example, allowing `example.com` will also allow `cdn.example.com`, `api.example.com`, and so on.
+
+### Wildcard Rules
+
+Custom block and allow lists support wildcard patterns using `*`:
+
+```
+# In custom-block.txt or custom-allow.txt
+*.ads.com              # Matches foo.ads.com, a.b.ads.com (not ads.com itself)
+ad*.example.com        # Matches ads.example.com, adserver.example.com
+tracking.*.cdn.net     # Matches tracking.us.cdn.net, tracking.eu.cdn.net
+```
+
+Leading `*.` matches any number of subdomain labels. A `*` elsewhere matches within a single DNS label (no dots). Plain entries without `*` work exactly as before.
 
 ### Filter Lists
 
@@ -253,6 +273,16 @@ listen_port = 53
 [updates]
 interval_hours = 24    # Auto-update interval (0 to disable)
 
+[cache]
+enabled = true
+max_entries = 10000     # Maximum cached responses
+max_ttl = 3600          # Cap TTL at 1 hour
+min_ttl = 0             # Minimum TTL floor
+
+[cname]
+check_enabled = true    # Inspect CNAME chains for blocked targets
+max_depth = 16          # Maximum CNAME hops to check
+
 [logging]
 log_queries = true
 log_max_size_mb = 50
@@ -279,6 +309,14 @@ When a blocked domain is queried:
 This approach is more compatible than returning `NXDOMAIN`, which can cause aggressive retries in some applications. The `0.0.0.0` response causes connections to fail silently and quickly.
 
 Domain matching checks the full hierarchy — blocking `ads.example.com` also blocks `sub.ads.example.com` and any deeper subdomains, without blocking `example.com` itself.
+
+### CNAME Flattening
+
+Some trackers use CNAME cloaking to evade DNS-level blocking. For example, `tracker.example.com` might CNAME to `t.ads.net`, which is on the blocklist. Coreguard inspects the full CNAME chain in upstream responses and blocks queries whose targets resolve to blocked domains. This is enabled by default and configurable via `config.toml`.
+
+### DNS Response Caching
+
+Coreguard maintains a local cache of DNS responses, making repeat queries near-instant. The cache is TTL-aware, thread-safe, and automatically sweeps expired entries. Cache is cleared on blocklist reload to prevent serving stale data for newly-blocked domains. Cache statistics are visible via `coreguard status`.
 
 ### DNS-Level vs. Browser-Level Blocking
 
@@ -316,12 +354,17 @@ This will detect the backup file and restore your original DNS settings even if 
 
 ### A website is broken
 
-The site may be on a blocklist. Check the log and add it to your allowlist:
+The site may be on a blocklist. The quickest fix:
+
+```bash
+sudo .venv/bin/coreguard unblock broken-site.com   # Adds to allowlist + reloads immediately
+```
+
+To investigate first:
 
 ```bash
 coreguard log -n 50                          # Look for the domain being blocked
-coreguard allow broken-site.com              # Allowlist it
-sudo .venv/bin/coreguard update              # Apply the change
+sudo .venv/bin/coreguard unblock the-domain  # Unblock it
 ```
 
 ### Verifying coreguard is active
