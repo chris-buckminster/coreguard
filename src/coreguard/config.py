@@ -102,6 +102,16 @@ class Config:
     log_queries: bool = True
     log_max_size_mb: int = 50
 
+    # Cache
+    cache_enabled: bool = True
+    cache_max_entries: int = 10_000
+    cache_max_ttl: int = 3600
+    cache_min_ttl: int = 0
+
+    # CNAME checking
+    cname_check_enabled: bool = True
+    cname_max_depth: int = 16
+
 
 def ensure_dirs() -> None:
     """Create all required directories and files."""
@@ -133,6 +143,16 @@ def _config_to_dict(config: Config) -> dict[str, Any]:
             "log_queries": config.log_queries,
             "log_max_size_mb": config.log_max_size_mb,
         },
+        "cache": {
+            "enabled": config.cache_enabled,
+            "max_entries": config.cache_max_entries,
+            "max_ttl": config.cache_max_ttl,
+            "min_ttl": config.cache_min_ttl,
+        },
+        "cname": {
+            "check_enabled": config.cname_check_enabled,
+            "max_depth": config.cname_max_depth,
+        },
     }
 
 
@@ -159,6 +179,16 @@ def _dict_to_config(data: dict[str, Any]) -> Config:
         lg = data["logging"]
         config.log_queries = lg.get("log_queries", config.log_queries)
         config.log_max_size_mb = lg.get("log_max_size_mb", config.log_max_size_mb)
+    if "cache" in data:
+        c = data["cache"]
+        config.cache_enabled = c.get("enabled", config.cache_enabled)
+        config.cache_max_entries = c.get("max_entries", config.cache_max_entries)
+        config.cache_max_ttl = c.get("max_ttl", config.cache_max_ttl)
+        config.cache_min_ttl = c.get("min_ttl", config.cache_min_ttl)
+    if "cname" in data:
+        cn = data["cname"]
+        config.cname_check_enabled = cn.get("check_enabled", config.cname_check_enabled)
+        config.cname_max_depth = cn.get("max_depth", config.cname_max_depth)
     return config
 
 

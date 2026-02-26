@@ -96,14 +96,17 @@ def main_loop(
     config: Config,
     domain_filter: DomainFilter,
     stats: Stats,
+    cache=None,
 ) -> None:
     """Main daemon loop: periodic list updates, stats persistence, health checks."""
     update_interval = config.update_interval_hours * 3600
     last_update = time.time()
     last_dns_check = time.time()
     last_stats_trim = time.time()
+    last_cache_sweep = time.time()
     dns_check_interval = 60  # 1 minute — fast recovery after sleep/wake
     stats_trim_interval = 3600  # 1 hour
+    cache_sweep_interval = 300  # 5 minutes
 
     while True:
         time.sleep(60)
@@ -120,6 +123,9 @@ def main_loop(
             try:
                 logger.info("Reloading filter lists (SIGHUP)...")
                 update_all_lists(config, domain_filter)
+                if cache:
+                    cache.clear()
+                    logger.info("Cache cleared after reload")
             except Exception as e:
                 logger.warning("Reload failed: %s", e)
 
@@ -143,6 +149,14 @@ def main_loop(
                     notify_dns_misconfigured()
             except Exception as e:
                 logger.debug("DNS health check failed: %s", e)
+
+        # Sweep expired cache entries
+        if cache and (time.time() - last_cache_sweep) >= cache_sweep_interval:
+            last_cache_sweep = time.time()
+            try:
+                cache.sweep_expired()
+            except Exception as e:
+                logger.debug("Cache sweep failed: %s", e)
 
         # Trim stats counters to prevent unbounded memory growth
         if (time.time() - last_stats_trim) >= stats_trim_interval:

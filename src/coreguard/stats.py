@@ -17,6 +17,9 @@ class Stats:
         self.total_queries = 0
         self.blocked_queries = 0
         self.error_queries = 0
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.cname_blocks = 0
         self.top_blocked: Counter[str] = Counter()
         self.top_queried: Counter[str] = Counter()
 
@@ -30,6 +33,18 @@ class Stats:
             if error:
                 self.error_queries += 1
 
+    def record_cache_hit(self) -> None:
+        with self._lock:
+            self.cache_hits += 1
+
+    def record_cache_miss(self) -> None:
+        with self._lock:
+            self.cache_misses += 1
+
+    def record_cname_block(self) -> None:
+        with self._lock:
+            self.cname_blocks += 1
+
     def trim(self) -> None:
         """Trim counters to prevent unbounded memory growth."""
         with self._lock:
@@ -41,11 +56,16 @@ class Stats:
     def to_dict(self) -> dict:
         with self._lock:
             total = max(self.total_queries, 1)
+            cache_total = max(self.cache_hits + self.cache_misses, 1)
             return {
                 "total_queries": self.total_queries,
                 "blocked_queries": self.blocked_queries,
                 "blocked_percent": round((self.blocked_queries / total) * 100, 1),
                 "error_queries": self.error_queries,
+                "cache_hits": self.cache_hits,
+                "cache_misses": self.cache_misses,
+                "cache_hit_rate": round((self.cache_hits / cache_total) * 100, 1),
+                "cname_blocks": self.cname_blocks,
                 "top_blocked": dict(self.top_blocked.most_common(10)),
                 "top_queried": dict(self.top_queried.most_common(10)),
             }
@@ -65,6 +85,10 @@ class Stats:
             "blocked_queries": 0,
             "blocked_percent": 0.0,
             "error_queries": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cache_hit_rate": 0.0,
+            "cname_blocks": 0,
             "top_blocked": {},
             "top_queried": {},
         }

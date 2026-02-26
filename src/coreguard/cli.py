@@ -192,7 +192,7 @@ def start(foreground):
 
     # Start DNS server
     try:
-        udp_server, tcp_server = start_dns_server(config, domain_filter, stats, query_logger)
+        udp_server, tcp_server, cache = start_dns_server(config, domain_filter, stats, query_logger)
     except Exception as e:
         msg = f"Failed to start DNS server: {e}"
         click.echo(f"Error: {msg}")
@@ -214,7 +214,7 @@ def start(foreground):
 
     # Enter main loop (blocks forever)
     try:
-        main_loop(config, domain_filter, stats)
+        main_loop(config, domain_filter, stats, cache)
     except (KeyboardInterrupt, SystemExit):
         cleanup_fn()
 
@@ -258,7 +258,9 @@ def status():
     stats = Stats.load_from_file(STATS_FILE)
     click.echo(f"  Total queries:   {stats['total_queries']:,}")
     click.echo(f"  Blocked queries: {stats['blocked_queries']:,} ({stats['blocked_percent']}%)")
-    click.echo(f"  Errors:          {stats['error_queries']:,}")
+    click.echo(f"  Cache hits:      {stats.get('cache_hits', 0):,} ({stats.get('cache_hit_rate', 0.0)}%)")
+    click.echo(f"  CNAME blocks:    {stats.get('cname_blocks', 0):,}")
+    click.echo(f"  Errors:          {stats.get('error_queries', 0):,}")
 
     top_blocked = stats.get("top_blocked", {})
     if top_blocked:
