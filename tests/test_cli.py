@@ -31,9 +31,10 @@ class TestCLI:
             result = self.runner.invoke(main, ["stop"])
             assert result.exit_code != 0
 
+    @patch("coreguard.cli._port_53_responding", return_value=False)
     @patch("coreguard.cli.read_pid", return_value=None)
     @patch("coreguard.cli.process_exists", return_value=False)
-    def test_status_not_running(self, mock_exists, mock_pid):
+    def test_status_not_running(self, mock_exists, mock_pid, mock_port):
         result = self.runner.invoke(main, ["status"])
         assert "not running" in result.output
 

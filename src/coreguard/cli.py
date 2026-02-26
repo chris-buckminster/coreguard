@@ -54,6 +54,25 @@ LAUNCHD_PLIST_PATH = Path("/Library/LaunchDaemons/com.coreguard.daemon.plist")
 LAUNCHD_LABEL = "com.coreguard.daemon"
 
 
+def _port_53_responding() -> bool:
+    """Check if something is responding on 127.0.0.1:53."""
+    import socket
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(2)
+        sock.sendto(
+            b"\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+            b"\x09localhost\x00\x00\x01\x00\x01",
+            ("127.0.0.1", 53),
+        )
+        sock.recvfrom(512)
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+
 def _setup_logging(foreground: bool) -> None:
     """Configure root logger."""
     log_level = logging.INFO
@@ -222,11 +241,17 @@ def stop():
 def status():
     """Show coreguard status and statistics."""
     pid = read_pid()
-    if pid is None or not process_exists(pid):
+    pid_running = pid is not None and process_exists(pid)
+    port_responding = _port_53_responding()
+
+    if not pid_running and not port_responding:
         click.echo("Coreguard is not running.")
         return
 
-    click.echo(f"Coreguard is running (PID: {pid})")
+    if pid_running:
+        click.echo(f"Coreguard is running (PID: {pid})")
+    else:
+        click.echo("Coreguard is running (port 53 responding)")
     click.echo(f"Config: {CONFIG_DIR}")
     click.echo()
 
@@ -367,10 +392,15 @@ def doctor():
     issues = []
     config = load_config()
 
-    # 1. Check if daemon is running
+    # 1. Check if daemon is running (PID file or port 53)
     pid = read_pid()
-    if pid and process_exists(pid):
+    pid_running = pid is not None and process_exists(pid)
+    port_responding = _port_53_responding()
+
+    if pid_running:
         click.echo(click.style("[OK]", fg="green") + f"  Daemon is running (PID: {pid})")
+    elif port_responding:
+        click.echo(click.style("[OK]", fg="green") + "  Daemon is running (port 53 responding)")
     else:
         click.echo(click.style("[FAIL]", fg="red") + "  Daemon is not running")
         issues.append("Daemon is not running. Start with: sudo coreguard start")
@@ -396,22 +426,10 @@ def doctor():
     if not dns_ok:
         issues.append("System DNS is not pointing to coreguard. Restart with: sudo coreguard start")
 
-    # 3. Check if port 53 is responding
-    try:
-        import socket
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(2)
-        # Send a minimal DNS query
-        sock.sendto(
-            b"\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
-            b"\x09localhost\x00\x00\x01\x00\x01",
-            ("127.0.0.1", 53),
-        )
-        sock.recvfrom(512)
-        sock.close()
+    # 3. Check if port 53 is responding (reuse result from step 1)
+    if port_responding:
         click.echo(click.style("[OK]", fg="green") + "  Port 53 is responding on 127.0.0.1")
-    except Exception:
+    else:
         click.echo(click.style("[FAIL]", fg="red") + "  Port 53 is not responding on 127.0.0.1")
         issues.append("DNS server is not responding on port 53")
 
@@ -443,17 +461,11 @@ def doctor():
         + f"  {enabled_count} filter lists enabled, {len(config.filter_lists)} total configured"
     )
 
-    # 5. Check launchd service
+    # 5. Check launchd service (plist existence — launchctl list requires root)
     if LAUNCHD_PLIST_PATH.exists():
-        if _is_launchd_loaded():
-            click.echo(
-                click.style("[OK]", fg="green") + "  Launchd service installed and loaded (auto-start on boot)"
-            )
-        else:
-            click.echo(
-                click.style("[WARN]", fg="yellow") + "  Launchd plist exists but service is not loaded"
-            )
-            issues.append("Launchd service not loaded. Run: sudo coreguard install")
+        click.echo(
+            click.style("[OK]", fg="green") + "  Launchd service installed (auto-start on boot)"
+        )
     else:
         click.echo(click.style("[INFO]", fg="blue") + "  Launchd service not installed (no auto-start)")
 
