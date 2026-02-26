@@ -31,6 +31,7 @@ This approach blocks ads and trackers system-wide — across every browser and a
 
 - **System-wide blocking** — covers all browsers and applications, not just one
 - **Encrypted upstream DNS** — queries forwarded via DNS-over-HTTPS (DoH) by default, with DoT and plain DNS options
+- **Multiple upstream providers** — automatic failover across Cloudflare, Google, and Quad9
 - **DNS response caching** — local TTL-aware cache makes repeat queries near-instant
 - **CNAME flattening** — detects and blocks trackers that hide behind CNAME cloaking
 - **Wildcard rules** — pattern matching in custom lists (`*.ads.com`, `ad*.example.com`)
@@ -260,11 +261,27 @@ The `config.toml` file is created automatically on first run with sensible defau
 
 ```toml
 [upstream]
-dns = "https://1.1.1.1/dns-query"    # DoH endpoint (IP-based to avoid circular DNS)
-dot_server = "1.1.1.1"               # DoT server (hostname or IP, used when mode = "dot")
-fallback = "1.1.1.1"                  # Plain DNS fallback
 mode = "doh"                          # "doh", "dot", or "plain"
 timeout = 5.0                         # Upstream query timeout (seconds)
+
+# Providers are tried in order; if one fails, the next is used automatically.
+[[upstream.providers]]
+name = "cloudflare"
+doh = "https://1.1.1.1/dns-query"
+dot = "1.1.1.1"
+plain = "1.1.1.1"
+
+[[upstream.providers]]
+name = "google"
+doh = "https://8.8.8.8/dns-query"
+dot = "8.8.8.8"
+plain = "8.8.8.8"
+
+[[upstream.providers]]
+name = "quad9"
+doh = "https://9.9.9.9:5053/dns-query"
+dot = "9.9.9.9"
+plain = "9.9.9.9"
 
 [server]
 listen_address = "127.0.0.1"
@@ -296,7 +313,7 @@ log_max_size_mb = 50
 | `dot` | DNS-over-TLS on port 853 | Encrypted | May be blocked by some networks |
 | `plain` | Traditional unencrypted DNS | None | Universal |
 
-If DoH or DoT fails, Coreguard automatically falls back to plain DNS to avoid connectivity loss.
+Coreguard ships with three upstream providers (Cloudflare, Google, Quad9) and tries them in order. If all providers fail with the primary mode (DoH/DoT), it falls back to plain DNS with each provider before giving up. You can add, remove, or reorder providers in `config.toml`.
 
 ## How Blocking Works
 
