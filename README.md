@@ -36,6 +36,8 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **Allowlist and blocklist** — per-domain overrides with a single command
 - **Auto-start on boot** — install as a macOS launchd service with a single command
 - **Health monitoring** — macOS notifications for failures, plus a `doctor` command for diagnostics
+- **VPN-safe** — only modifies DNS on physical interfaces (Wi-Fi, Ethernet, USB), leaving VPN tunnels untouched
+- **Self-healing DNS** — automatically re-applies DNS settings after sleep/wake or network changes (checked every 60 seconds)
 - **Live query logging** — see exactly what's being blocked in real time
 - **Statistics** — track total queries, block rate, and top blocked domains
 - **Graceful DNS restore** — original DNS settings are backed up and restored on stop
@@ -211,7 +213,7 @@ All lists are deduplicated and merged at load time. Adding more lists does not a
 Coreguard sends macOS notification center alerts when critical issues occur:
 
 - **Startup failure** — if the DNS server can't bind to port 53 or otherwise fails to start
-- **DNS misconfiguration** — if system DNS stops pointing to coreguard while the daemon is running (checked every 5 minutes)
+- **DNS misconfiguration** — if system DNS stops pointing to coreguard and automatic re-apply fails
 - **Filter list update failure** — if all filter list downloads fail during an update cycle
 
 Notifications appear as standard macOS banners. No additional software is required.
@@ -239,6 +241,7 @@ The `config.toml` file is created automatically on first run with sensible defau
 ```toml
 [upstream]
 dns = "https://1.1.1.1/dns-query"    # DoH endpoint (IP-based to avoid circular DNS)
+dot_server = "1.1.1.1"               # DoT server (hostname or IP, used when mode = "dot")
 fallback = "1.1.1.1"                  # Plain DNS fallback
 mode = "doh"                          # "doh", "dot", or "plain"
 timeout = 5.0                         # Upstream query timeout (seconds)
@@ -303,7 +306,7 @@ On macOS, `mDNSResponder` may occupy port 53. Coreguard is designed to coexist w
 
 ### DNS not restoring after a crash
 
-If coreguard exits uncleanly, your DNS may still point to `127.0.0.1`. Run:
+If coreguard exits uncleanly, your DNS may still point to `127.0.0.1`. When installed as a launchd service, coreguard will automatically restart within 10 seconds and resume normal operation. For manual installations, run:
 
 ```bash
 sudo .venv/bin/coreguard stop
