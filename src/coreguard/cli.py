@@ -327,7 +327,7 @@ def _send_reload_signal() -> bool:
     # Fall back to launchctl for launchd-managed daemons
     if LAUNCHD_PLIST_PATH.exists():
         result = subprocess.run(
-            ["launchctl", "kill", "SIGHUP", LAUNCHD_LABEL],
+            ["launchctl", "kill", "SIGHUP", f"system/{LAUNCHD_LABEL}"],
             capture_output=True,
             timeout=5,
         )
