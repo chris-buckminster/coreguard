@@ -44,6 +44,7 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **VPN-safe** — only modifies DNS on physical interfaces (Wi-Fi, Ethernet, USB), leaving VPN tunnels untouched
 - **Self-healing DNS** — automatically re-applies DNS settings after sleep/wake or network changes (checked every 60 seconds)
 - **Live query logging** — see exactly what's being blocked in real time
+- **Web dashboard** — real-time stats, top domains, and query log at `http://127.0.0.1:8080`
 - **Statistics** — track total queries, block rate, cache hit rate, and top blocked domains
 - **Graceful DNS restore** — original DNS settings are backed up and restored on stop
 - **Foreground mode** — run interactively for debugging and testing
@@ -183,6 +184,23 @@ The `doctor` command checks:
 - Whether the launchd service is installed
 - Log file status
 
+### Dashboard
+
+When coreguard is running, a web dashboard is available at `http://127.0.0.1:8080`. It displays:
+
+- **Stats cards** — total queries, blocked count, block rate, cache hit rate, cache size, CNAME blocks
+- **Top blocked domains** — the most frequently blocked domains and their counts
+- **Top queried domains** — the most frequently queried domains and their counts
+- **Recent queries** — scrollable log of recent DNS queries with timestamp, status, type, and domain
+
+The dashboard auto-refreshes every 5 seconds. It runs on localhost only and requires no authentication since it's not network-accessible. Disable it or change the port in `config.toml`:
+
+```toml
+[dashboard]
+enabled = true
+port = 8080
+```
+
 ### Logs and Statistics
 
 ```bash
@@ -303,6 +321,10 @@ max_depth = 16          # Maximum CNAME hops to check
 [logging]
 log_queries = true
 log_max_size_mb = 50
+
+[dashboard]
+enabled = true
+port = 8080              # Web dashboard port
 ```
 
 ### Upstream DNS Options
