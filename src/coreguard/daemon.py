@@ -138,7 +138,7 @@ def main_loop(
                 reapply_failed = False
                 for service in get_physical_interfaces():
                     servers = get_current_dns(service)
-                    if servers and "127.0.0.1" not in servers:
+                    if "127.0.0.1" not in servers:
                         logger.warning(
                             "DNS for '%s' reset to %s, re-applying",
                             service, servers,

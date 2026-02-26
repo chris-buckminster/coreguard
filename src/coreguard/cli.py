@@ -109,10 +109,10 @@ def _stop_running_daemon() -> bool:
     """Stop any running coreguard daemon. Returns True if something was stopped."""
     stopped = False
 
-    # Try launchctl first if service is loaded
+    # Unload launchd service to prevent auto-restart (KeepAlive=true)
     if LAUNCHD_PLIST_PATH.exists() and _is_launchd_loaded():
         subprocess.run(
-            ["launchctl", "stop", LAUNCHD_LABEL],
+            ["launchctl", "unload", str(LAUNCHD_PLIST_PATH)],
             capture_output=True,
             timeout=10,
         )
@@ -153,7 +153,29 @@ def start(foreground):
         click.echo("Error: coreguard requires root privileges. Run with: sudo coreguard start")
         sys.exit(1)
 
-    if is_running():
+    # If launchd service exists but is unloaded (after stop), reload it
+    if not foreground and LAUNCHD_PLIST_PATH.exists() and not _is_launchd_loaded():
+        click.echo("Starting coreguard via launchd service...")
+        result = subprocess.run(
+            ["launchctl", "load", str(LAUNCHD_PLIST_PATH)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            # Wait for daemon to be ready
+            for _ in range(30):
+                time.sleep(1)
+                if _port_53_responding():
+                    click.echo("Coreguard started.")
+                    return
+            click.echo("Coreguard service loaded but daemon is still starting...")
+            return
+        else:
+            click.echo(f"Warning: launchctl load failed: {result.stderr.strip()}")
+            click.echo("Falling back to manual start...")
+
+    if is_running() or _port_53_responding():
         click.echo("Coreguard is already running.")
         sys.exit(1)
 
@@ -252,6 +274,10 @@ def status():
     port_responding = _port_53_responding()
 
     if not pid_running and not port_responding:
+        # Check if launchd service is starting up
+        if LAUNCHD_PLIST_PATH.exists() and _is_launchd_loaded():
+            click.echo("Coreguard is starting up (launchd service loaded)...")
+            return
         click.echo("Coreguard is not running.")
         return
 

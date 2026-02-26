@@ -243,7 +243,14 @@ def load_config() -> Config:
         save_config(config)
         return config
     data = tomllib.loads(CONFIG_FILE.read_text())
-    return _dict_to_config(data)
+    config = _dict_to_config(data)
+
+    # Auto-migrate old config format to current format
+    upstream = data.get("upstream", {})
+    if "providers" not in upstream or "dashboard" not in data:
+        save_config(config)
+
+    return config
 
 
 def save_config(config: Config) -> None:
