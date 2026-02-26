@@ -100,6 +100,9 @@ def main_loop(
     update_interval = config.update_interval_hours * 3600
     last_update = time.time()
 
+    last_dns_check = time.time()
+    dns_check_interval = 300  # Check DNS health every 5 minutes
+
     while True:
         time.sleep(60)
 
@@ -108,6 +111,21 @@ def main_loop(
             stats.save(STATS_FILE)
         except Exception:
             pass
+
+        # Periodic DNS health check
+        if (time.time() - last_dns_check) >= dns_check_interval:
+            last_dns_check = time.time()
+            try:
+                from coreguard.network import get_active_interfaces, get_current_dns
+                from coreguard.notify import notify_dns_misconfigured
+                for service in get_active_interfaces():
+                    servers = get_current_dns(service)
+                    if servers and "127.0.0.1" not in servers:
+                        logger.warning("DNS for '%s' is not pointing to coreguard: %s", service, servers)
+                        notify_dns_misconfigured()
+                        break
+            except Exception as e:
+                logger.debug("DNS health check failed: %s", e)
 
         # Auto-update filter lists
         if update_interval > 0 and (time.time() - last_update) >= update_interval:

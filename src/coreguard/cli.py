@@ -32,7 +32,8 @@ from coreguard.daemon import (
 from coreguard.dns_server import start_dns_server
 from coreguard.filtering import DomainFilter
 from coreguard.logging_config import QueryLogger
-from coreguard.network import flush_dns_cache, restore_dns, set_dns_to_local
+from coreguard.network import flush_dns_cache, get_active_interfaces, get_current_dns, restore_dns, set_dns_to_local
+from coreguard.notify import notify_dns_misconfigured, notify_lists_update_failed, notify_startup_failure
 from coreguard.stats import Stats
 
 
@@ -103,8 +104,10 @@ def start(foreground):
     try:
         udp_server, tcp_server = start_dns_server(config, domain_filter, stats, query_logger)
     except Exception as e:
-        click.echo(f"Error: Failed to start DNS server: {e}")
+        msg = f"Failed to start DNS server: {e}"
+        click.echo(f"Error: {msg}")
         click.echo("Is port 53 already in use? Check with: sudo lsof -i :53")
+        notify_startup_failure(msg)
         sys.exit(1)
 
     # Configure macOS DNS
@@ -294,6 +297,93 @@ def remove_list(name):
     save_config(config)
     click.echo(f"Removed list '{name}'.")
     click.echo("Run 'sudo coreguard update' to apply.")
+
+
+@main.command()
+def doctor():
+    """Run diagnostics to check coreguard health."""
+    issues = []
+    config = load_config()
+
+    # 1. Check if daemon is running
+    pid = read_pid()
+    if pid and process_exists(pid):
+        click.echo(click.style("[OK]", fg="green") + f"  Daemon is running (PID: {pid})")
+    else:
+        click.echo(click.style("[FAIL]", fg="red") + "  Daemon is not running")
+        issues.append("Daemon is not running. Start with: sudo coreguard start")
+
+    # 2. Check DNS configuration
+    dns_ok = True
+    for service in get_active_interfaces():
+        servers = get_current_dns(service)
+        if servers and "127.0.0.1" in servers:
+            click.echo(click.style("[OK]", fg="green") + f"  DNS for '{service}' points to 127.0.0.1")
+        elif not servers:
+            click.echo(click.style("[WARN]", fg="yellow") + f"  DNS for '{service}' uses DHCP defaults (not coreguard)")
+            dns_ok = False
+        else:
+            click.echo(click.style("[FAIL]", fg="red") + f"  DNS for '{service}' points to {', '.join(servers)} (not coreguard)")
+            dns_ok = False
+    if not dns_ok:
+        issues.append("System DNS is not pointing to coreguard. Restart with: sudo coreguard start")
+
+    # 3. Check if port 53 is responding
+    try:
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(2)
+        # Send a minimal DNS query for localhost
+        sock.sendto(b'\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x09localhost\x00\x00\x01\x00\x01', ("127.0.0.1", 53))
+        sock.recvfrom(512)
+        sock.close()
+        click.echo(click.style("[OK]", fg="green") + "  Port 53 is responding on 127.0.0.1")
+    except Exception:
+        click.echo(click.style("[FAIL]", fg="red") + "  Port 53 is not responding on 127.0.0.1")
+        issues.append("DNS server is not responding on port 53")
+
+    # 4. Check filter lists
+    from coreguard.config import BLOCKLISTS_DIR
+    cached_lists = list(BLOCKLISTS_DIR.glob("*.txt"))
+    enabled_count = sum(1 for f in config.filter_lists if f.get("enabled", True))
+    if cached_lists:
+        # Check age of newest cached list
+        newest = max(cached_lists, key=lambda p: p.stat().st_mtime)
+        import time
+        age_hours = (time.time() - newest.stat().st_mtime) / 3600
+        if age_hours < 48:
+            click.echo(click.style("[OK]", fg="green") + f"  {len(cached_lists)} filter lists cached (last update: {age_hours:.0f}h ago)")
+        else:
+            click.echo(click.style("[WARN]", fg="yellow") + f"  Filter lists are stale (last update: {age_hours:.0f}h ago)")
+            issues.append("Filter lists haven't been updated recently. Run: sudo coreguard update")
+    else:
+        click.echo(click.style("[FAIL]", fg="red") + "  No cached filter lists found")
+        issues.append("No filter lists downloaded. Run: sudo coreguard update")
+
+    click.echo(click.style("[INFO]", fg="blue") + f"  {enabled_count} filter lists enabled, {len(config.filter_lists)} total configured")
+
+    # 5. Check launchd service
+    launchd_path = Path("/Library/LaunchDaemons/com.coreguard.daemon.plist")
+    if launchd_path.exists():
+        click.echo(click.style("[OK]", fg="green") + "  Launchd service installed (auto-start on boot)")
+    else:
+        click.echo(click.style("[INFO]", fg="blue") + "  Launchd service not installed (no auto-start)")
+
+    # 6. Check log file
+    if LOG_FILE.exists():
+        log_size_mb = LOG_FILE.stat().st_size / (1024 * 1024)
+        click.echo(click.style("[OK]", fg="green") + f"  Log file: {LOG_FILE} ({log_size_mb:.1f} MB)")
+    else:
+        click.echo(click.style("[INFO]", fg="blue") + "  No log file yet")
+
+    # Summary
+    click.echo()
+    if not issues:
+        click.echo(click.style("All checks passed. Coreguard is healthy.", fg="green"))
+    else:
+        click.echo(click.style(f"{len(issues)} issue(s) found:", fg="red"))
+        for issue in issues:
+            click.echo(f"  - {issue}")
 
 
 LAUNCHD_PLIST_PATH = Path("/Library/LaunchDaemons/com.coreguard.daemon.plist")

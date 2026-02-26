@@ -222,6 +222,8 @@ def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
     """
     all_blocked: set[str] = set()
     all_allowed: set[str] = set()
+    download_failures = 0
+    enabled_count = sum(1 for f in config.filter_lists if f.get("enabled", True))
 
     for flist in config.filter_lists:
         if not flist.get("enabled", True):
@@ -235,6 +237,7 @@ def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
             content = download_list(url)
             cache_path.write_text(content)
         except Exception as e:
+            download_failures += 1
             logger.warning("Failed to download %s: %s", name, e)
             # Fall back to cached version
             if cache_path.exists():
@@ -265,4 +268,13 @@ def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
         domain_filter.blocked_count,
         domain_filter.allowed_count,
     )
+
+    # Send notification if most downloads failed
+    if download_failures > 0 and download_failures >= enabled_count:
+        try:
+            from coreguard.notify import notify_lists_update_failed
+            notify_lists_update_failed()
+        except Exception:
+            pass
+
     return domain_filter.blocked_count
