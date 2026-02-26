@@ -99,6 +99,10 @@ def start(foreground):
     if not foreground:
         click.echo("Starting coreguard daemon...")
         daemonize()
+    else:
+        # Write PID file in foreground mode too (for doctor/status checks)
+        from coreguard.config import PID_FILE
+        PID_FILE.write_text(str(os.getpid()))
 
     # Start DNS server
     try:
@@ -126,6 +130,9 @@ def start(foreground):
         main_loop(config, domain_filter, stats)
     except (KeyboardInterrupt, SystemExit):
         cleanup_fn()
+    finally:
+        from coreguard.config import PID_FILE
+        PID_FILE.unlink(missing_ok=True)
 
 
 @main.command()
