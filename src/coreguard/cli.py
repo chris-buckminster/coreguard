@@ -294,6 +294,9 @@ def update():
 @click.argument("domain")
 def allow(domain):
     """Add a domain to the allowlist."""
+    if os.geteuid() != 0:
+        click.echo("Error: requires root privileges. Run with: sudo coreguard allow")
+        sys.exit(1)
     domain = domain.lower().strip(".")
     with open(CUSTOM_ALLOW_FILE, "a") as f:
         f.write(domain + "\n")
@@ -305,6 +308,9 @@ def allow(domain):
 @click.argument("domain")
 def block(domain):
     """Add a domain to the blocklist."""
+    if os.geteuid() != 0:
+        click.echo("Error: requires root privileges. Run with: sudo coreguard block")
+        sys.exit(1)
     domain = domain.lower().strip(".")
     with open(CUSTOM_BLOCK_FILE, "a") as f:
         f.write(domain + "\n")
@@ -328,6 +334,9 @@ def _remove_from_file(path: Path, domain: str) -> bool:
 @click.argument("domain")
 def unblock(domain):
     """Unblock a domain — adds to allowlist and triggers immediate reload."""
+    if os.geteuid() != 0:
+        click.echo("Error: requires root privileges. Run with: sudo coreguard unblock")
+        sys.exit(1)
     domain = domain.lower().strip(".")
 
     # Remove from custom block file if present

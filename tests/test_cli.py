@@ -47,7 +47,8 @@ class TestCLI:
         assert result.exit_code == 0
         assert "stevenblack" in result.output
 
-    def test_allow_adds_domain(self, tmp_path):
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    def test_allow_adds_domain(self, mock_euid, tmp_path):
         allow_file = tmp_path / "allow.txt"
         allow_file.touch()
         with patch("coreguard.cli.CUSTOM_ALLOW_FILE", allow_file):
@@ -55,7 +56,8 @@ class TestCLI:
             assert result.exit_code == 0
             assert "example.com" in allow_file.read_text()
 
-    def test_block_adds_domain(self, tmp_path):
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    def test_block_adds_domain(self, mock_euid, tmp_path):
         block_file = tmp_path / "block.txt"
         block_file.touch()
         with patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file):
@@ -63,8 +65,9 @@ class TestCLI:
             assert result.exit_code == 0
             assert "evil.com" in block_file.read_text()
 
+    @patch("coreguard.cli.os.geteuid", return_value=0)
     @patch("coreguard.cli.read_pid", return_value=None)
-    def test_unblock_adds_to_allowlist(self, mock_pid, tmp_path):
+    def test_unblock_adds_to_allowlist(self, mock_pid, mock_euid, tmp_path):
         allow_file = tmp_path / "allow.txt"
         allow_file.touch()
         block_file = tmp_path / "block.txt"
@@ -76,8 +79,9 @@ class TestCLI:
             assert "example.com" in allow_file.read_text()
             assert "allowlist" in result.output
 
+    @patch("coreguard.cli.os.geteuid", return_value=0)
     @patch("coreguard.cli.read_pid", return_value=None)
-    def test_unblock_removes_from_blocklist(self, mock_pid, tmp_path):
+    def test_unblock_removes_from_blocklist(self, mock_pid, mock_euid, tmp_path):
         allow_file = tmp_path / "allow.txt"
         allow_file.touch()
         block_file = tmp_path / "block.txt"
@@ -92,8 +96,9 @@ class TestCLI:
             assert "other.com" in contents
             assert "more.com" in contents
 
+    @patch("coreguard.cli.os.geteuid", return_value=0)
     @patch("coreguard.cli.read_pid", return_value=None)
-    def test_unblock_deduplicates(self, mock_pid, tmp_path):
+    def test_unblock_deduplicates(self, mock_pid, mock_euid, tmp_path):
         allow_file = tmp_path / "allow.txt"
         allow_file.write_text("example.com\n")
         block_file = tmp_path / "block.txt"
@@ -106,9 +111,10 @@ class TestCLI:
             # Should not duplicate
             assert allow_file.read_text().count("example.com") == 1
 
+    @patch("coreguard.cli.os.geteuid", return_value=0)
     @patch("coreguard.cli.process_exists", return_value=True)
     @patch("coreguard.cli.read_pid", return_value=1234)
-    def test_unblock_signals_daemon(self, mock_pid, mock_exists, tmp_path):
+    def test_unblock_signals_daemon(self, mock_pid, mock_exists, mock_euid, tmp_path):
         allow_file = tmp_path / "allow.txt"
         allow_file.touch()
         block_file = tmp_path / "block.txt"
