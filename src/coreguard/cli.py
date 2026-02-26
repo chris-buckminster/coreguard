@@ -4,6 +4,7 @@ import signal
 import subprocess
 import sys
 from functools import partial
+from pathlib import Path
 
 import click
 
@@ -293,3 +294,97 @@ def remove_list(name):
     save_config(config)
     click.echo(f"Removed list '{name}'.")
     click.echo("Run 'sudo coreguard update' to apply.")
+
+
+LAUNCHD_PLIST_PATH = Path("/Library/LaunchDaemons/com.coreguard.daemon.plist")
+
+
+def _get_coreguard_bin() -> str:
+    """Find the coreguard executable path."""
+    import shutil
+    # Check the venv we're running from first
+    current_bin = Path(sys.executable).parent / "coreguard"
+    if current_bin.exists():
+        return str(current_bin)
+    # Fall back to PATH lookup
+    found = shutil.which("coreguard")
+    if found:
+        return found
+    raise FileNotFoundError("Could not find coreguard executable")
+
+
+def _generate_plist(coreguard_bin: str) -> str:
+    """Generate the launchd plist XML."""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.coreguard.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{coreguard_bin}</string>
+        <string>start</string>
+        <string>--foreground</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{LOG_FILE}</string>
+    <key>StandardErrorPath</key>
+    <string>{LOG_FILE}</string>
+</dict>
+</plist>
+"""
+
+
+@main.command()
+def install():
+    """Install coreguard as a system service (auto-start on boot)."""
+    if os.geteuid() != 0:
+        click.echo("Error: requires root privileges. Run with: sudo coreguard install")
+        sys.exit(1)
+
+    try:
+        coreguard_bin = _get_coreguard_bin()
+    except FileNotFoundError as e:
+        click.echo(f"Error: {e}")
+        sys.exit(1)
+
+    plist_content = _generate_plist(coreguard_bin)
+    LAUNCHD_PLIST_PATH.write_text(plist_content)
+
+    # Set correct ownership and permissions
+    subprocess.run(["chown", "root:wheel", str(LAUNCHD_PLIST_PATH)], check=True)
+    subprocess.run(["chmod", "644", str(LAUNCHD_PLIST_PATH)], check=True)
+
+    # Load the service
+    subprocess.run(["launchctl", "load", str(LAUNCHD_PLIST_PATH)], check=True)
+
+    click.echo(f"Coreguard installed as system service.")
+    click.echo(f"  Executable: {coreguard_bin}")
+    click.echo(f"  Plist: {LAUNCHD_PLIST_PATH}")
+    click.echo("Coreguard will now start automatically on boot.")
+
+
+@main.command()
+def uninstall():
+    """Remove coreguard system service (disable auto-start)."""
+    if os.geteuid() != 0:
+        click.echo("Error: requires root privileges. Run with: sudo coreguard uninstall")
+        sys.exit(1)
+
+    if not LAUNCHD_PLIST_PATH.exists():
+        click.echo("Coreguard is not installed as a system service.")
+        return
+
+    # Unload the service
+    subprocess.run(["launchctl", "unload", str(LAUNCHD_PLIST_PATH)], capture_output=True)
+
+    # Restore DNS in case the service was running
+    restore_dns()
+
+    LAUNCHD_PLIST_PATH.unlink(missing_ok=True)
+    click.echo("Coreguard system service removed. It will no longer start on boot.")

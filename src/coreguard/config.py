@@ -51,6 +51,31 @@ DEFAULT_FILTER_LISTS = [
         "url": "https://energized.pro/ultimate/formats/hosts.txt",
         "enabled": False,  # Disabled by default — very aggressive, may cause false positives
     },
+    {
+        "name": "hagezi-multi-pro",
+        "url": "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/hosts/pro.txt",
+        "enabled": True,
+    },
+    {
+        "name": "1hosts-lite",
+        "url": "https://o0.pages.dev/Lite/hosts.txt",
+        "enabled": True,
+    },
+    {
+        "name": "notracking",
+        "url": "https://raw.githubusercontent.com/notracking/hosts-blocklists/master/hostnames.txt",
+        "enabled": True,
+    },
+    {
+        "name": "dan-pollock",
+        "url": "https://someonewhocares.org/hosts/hosts",
+        "enabled": True,
+    },
+    {
+        "name": "phishing-army",
+        "url": "https://phishing.army/download/phishing_army_blocklist.txt",
+        "enabled": True,
+    },
 ]
 
 

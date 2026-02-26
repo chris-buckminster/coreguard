@@ -35,6 +35,11 @@ class TestConfig:
         assert "malware-domains" in names
         assert "oisd-small" in names
         assert "energized-ultimate" in names
+        assert "hagezi-multi-pro" in names
+        assert "1hosts-lite" in names
+        assert "notracking" in names
+        assert "dan-pollock" in names
+        assert "phishing-army" in names
 
     def test_energized_disabled_by_default(self):
         config = Config()
