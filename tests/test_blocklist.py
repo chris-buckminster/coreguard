@@ -90,10 +90,21 @@ class TestLoadCustomList:
     def test_loads_domains(self, tmp_path):
         f = tmp_path / "custom.txt"
         f.write_text("foo.com\nbar.org\n# comment\n")
-        domains = load_custom_list(f)
+        domains, wildcards = load_custom_list(f)
         assert domains == {"foo.com", "bar.org"}
+        assert wildcards == []
 
     def test_missing_file(self, tmp_path):
         f = tmp_path / "missing.txt"
-        domains = load_custom_list(f)
+        domains, wildcards = load_custom_list(f)
         assert domains == set()
+        assert wildcards == []
+
+    def test_separates_wildcards(self, tmp_path):
+        f = tmp_path / "custom.txt"
+        f.write_text("foo.com\n*.ads.com\nad*.example.com\nbar.org\n")
+        domains, wildcards = load_custom_list(f)
+        assert domains == {"foo.com", "bar.org"}
+        assert "*.ads.com" in wildcards
+        assert "ad*.example.com" in wildcards
+        assert len(wildcards) == 2

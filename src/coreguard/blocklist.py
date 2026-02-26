@@ -218,17 +218,25 @@ def download_list(url: str, timeout: float = 30.0) -> str:
             return response.text
 
 
-def load_custom_list(path: Path) -> set[str]:
-    """Load a custom allow/block list (one domain per line)."""
+def load_custom_list(path: Path) -> tuple[set[str], list[str]]:
+    """Load a custom allow/block list (one domain per line).
+
+    Returns (plain_domains, wildcard_patterns). Entries containing '*'
+    are treated as wildcard patterns.
+    """
     if not path.exists():
-        return set()
-    content = path.read_text()
+        return set(), []
     domains: set[str] = set()
-    for line in content.splitlines():
+    wildcards: list[str] = []
+    for line in path.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
-            domains.add(line.lower().strip("."))
-    return domains
+            entry = line.lower().strip(".")
+            if "*" in entry:
+                wildcards.append(entry)
+            else:
+                domains.add(entry)
+    return domains, wildcards
 
 
 def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
@@ -269,8 +277,8 @@ def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
         logger.info("Parsed %s: %d blocked, %d allowed", name, len(blocked), len(allowed))
 
     # Load custom user lists
-    custom_blocked = load_custom_list(CUSTOM_BLOCK_FILE)
-    custom_allowed = load_custom_list(CUSTOM_ALLOW_FILE)
+    custom_blocked, blocked_wildcards = load_custom_list(CUSTOM_BLOCK_FILE)
+    custom_allowed, allowed_wildcards = load_custom_list(CUSTOM_ALLOW_FILE)
     all_blocked.update(custom_blocked)
     all_allowed.update(custom_allowed)
 
@@ -278,6 +286,8 @@ def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
     domain_filter.clear()
     domain_filter.load_blocklist(all_blocked)
     domain_filter.load_allowlist(all_allowed)
+    domain_filter.load_blocklist_wildcards(blocked_wildcards)
+    domain_filter.load_allowlist_wildcards(allowed_wildcards)
 
     logger.info(
         "Filter loaded: %d blocked domains, %d allowed domains",
