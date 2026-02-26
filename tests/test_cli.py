@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from click.testing import CliRunner
 
@@ -8,6 +8,12 @@ from coreguard.cli import main
 class TestCLI:
     def setup_method(self):
         self.runner = CliRunner()
+        # Mock ensure_dirs since /usr/local/etc/coreguard/ requires root
+        self._ensure_patcher = patch("coreguard.cli.ensure_dirs")
+        self._ensure_patcher.start()
+
+    def teardown_method(self):
+        self._ensure_patcher.stop()
 
     def test_help(self):
         result = self.runner.invoke(main, ["--help"])
@@ -31,7 +37,10 @@ class TestCLI:
         result = self.runner.invoke(main, ["status"])
         assert "not running" in result.output
 
-    def test_lists_shows_filter_lists(self):
+    @patch("coreguard.cli.load_config")
+    def test_lists_shows_filter_lists(self, mock_config):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
         result = self.runner.invoke(main, ["lists"])
         assert result.exit_code == 0
         assert "stevenblack" in result.output

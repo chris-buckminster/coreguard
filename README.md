@@ -202,7 +202,7 @@ Coreguard ships with 11 filter list sources. Ten are enabled by default:
 | **URLhaus Malware Filter** | ~1.5K | Known malware domains | Enabled |
 | **Energized Ultimate** | ~500K+ | Aggressive, broad blocking | Disabled |
 
-The Energized Ultimate list is disabled by default because its aggressive scope may cause false positives on some websites. Enable it in `~/.config/coreguard/config.toml` if you prefer maximum coverage.
+The Energized Ultimate list is disabled by default because its aggressive scope may cause false positives on some websites. Enable it in `/usr/local/etc/coreguard/config.toml` if you prefer maximum coverage.
 
 All lists are deduplicated and merged at load time. Adding more lists does not affect query performance — domain lookups are O(1) hash table checks regardless of list size.
 
@@ -218,10 +218,10 @@ Notifications appear as standard macOS banners. No additional software is requir
 
 ## Configuration
 
-Coreguard stores its configuration and runtime data in `~/.config/coreguard/`:
+Coreguard stores its configuration and runtime data in `/usr/local/etc/coreguard/`:
 
 ```
-~/.config/coreguard/
+/usr/local/etc/coreguard/
 ├── config.toml          # Main configuration file
 ├── blocklists/          # Cached filter list downloads
 ├── custom-allow.txt     # Your allowlisted domains

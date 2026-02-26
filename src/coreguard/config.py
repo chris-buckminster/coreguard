@@ -10,7 +10,7 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
-CONFIG_DIR = Path.home() / ".config" / "coreguard"
+CONFIG_DIR = Path("/usr/local/etc/coreguard")
 PID_FILE = CONFIG_DIR / "coreguard.pid"
 LOG_FILE = CONFIG_DIR / "coreguard.log"
 STATS_FILE = CONFIG_DIR / "stats.json"
