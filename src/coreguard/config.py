@@ -57,7 +57,7 @@ DEFAULT_FILTER_LISTS = [
 @dataclass
 class Config:
     # Upstream DNS
-    upstream_dns: str = "https://cloudflare-dns.com/dns-query"
+    upstream_dns: str = "https://1.1.1.1/dns-query"
     upstream_fallback: str = "1.1.1.1"
     upstream_mode: str = "doh"  # "doh", "dot", "plain"
     upstream_timeout: float = 5.0

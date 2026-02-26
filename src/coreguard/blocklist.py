@@ -1,6 +1,8 @@
 import logging
 import re
+import socket
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -99,12 +101,105 @@ def detect_and_parse(content: str) -> tuple[set[str], set[str]]:
     return set(), set()
 
 
+def _resolve_via_upstream(hostname: str, upstream: str = "1.1.1.1") -> str:
+    """Resolve a hostname using a specific DNS server, bypassing system DNS."""
+    import struct
+
+    # Build a minimal DNS query for the hostname
+    import os
+    tx_id = os.urandom(2)
+    flags = b'\x01\x00'  # Standard query, recursion desired
+    counts = struct.pack('!4H', 1, 0, 0, 0)  # 1 question
+    qname = b''
+    for label in hostname.encode().split(b'.'):
+        qname += bytes([len(label)]) + label
+    qname += b'\x00'
+    qtype_qclass = struct.pack('!2H', 1, 1)  # A record, IN class
+    query = tx_id + flags + counts + qname + qtype_qclass
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(5.0)
+    try:
+        sock.sendto(query, (upstream, 53))
+        data, _ = sock.recvfrom(4096)
+        # Parse the answer section — skip header (12 bytes) and question section
+        offset = 12
+        # Skip question section
+        while data[offset] != 0:
+            offset += data[offset] + 1
+        offset += 5  # null byte + qtype (2) + qclass (2)
+        # Read answers
+        answer_count = struct.unpack('!H', data[6:8])[0]
+        for _ in range(answer_count):
+            # Skip name (may be compressed)
+            if data[offset] & 0xC0 == 0xC0:
+                offset += 2
+            else:
+                while data[offset] != 0:
+                    offset += data[offset] + 1
+                offset += 1
+            rtype, rclass, ttl, rdlength = struct.unpack('!HHiH', data[offset:offset + 10])
+            offset += 10
+            if rtype == 1 and rdlength == 4:  # A record
+                ip = '.'.join(str(b) for b in data[offset:offset + 4])
+                return ip
+            offset += rdlength
+    finally:
+        sock.close()
+    raise RuntimeError(f"Could not resolve {hostname} via {upstream}")
+
+
+class _DirectDNSTransport(httpx.HTTPTransport):
+    """HTTP transport that resolves hostnames via a specific DNS server (1.1.1.1)
+    instead of system DNS, avoiding circular dependency when system DNS points to coreguard."""
+
+    def __init__(self, upstream_dns: str = "1.1.1.1", **kwargs):
+        self._upstream_dns = upstream_dns
+        self._resolve_cache: dict[str, str] = {}
+        super().__init__(**kwargs)
+
+    def _resolve(self, hostname: str) -> str:
+        if hostname in self._resolve_cache:
+            return self._resolve_cache[hostname]
+        ip = _resolve_via_upstream(hostname, self._upstream_dns)
+        self._resolve_cache[hostname] = ip
+        return ip
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        hostname = request.url.host
+        # Only override for non-IP hostnames
+        if hostname and not _is_ip(hostname):
+            ip = self._resolve(hostname)
+            # Swap the host in the URL to the resolved IP, keep everything else
+            request.url = request.url.copy_with(host=ip)
+            # Ensure the original hostname is used for TLS SNI and Host header
+            request.headers["Host"] = hostname
+        return super().handle_request(request)
+
+
+def _is_ip(hostname: str) -> bool:
+    """Check if a string is an IP address."""
+    try:
+        socket.inet_aton(hostname)
+        return True
+    except OSError:
+        return False
+
+
 def download_list(url: str, timeout: float = 30.0) -> str:
-    """Download a filter list from a URL."""
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        response = client.get(url)
-        response.raise_for_status()
-        return response.text
+    """Download a filter list, resolving DNS directly via 1.1.1.1 to bypass system DNS."""
+    try:
+        transport = _DirectDNSTransport(verify=True)
+        with httpx.Client(timeout=timeout, follow_redirects=True, transport=transport) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            return response.text
+    except Exception as e:
+        logger.debug("Direct DNS download failed (%s), trying system DNS", e)
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            return response.text
 
 
 def load_custom_list(path: Path) -> set[str]:

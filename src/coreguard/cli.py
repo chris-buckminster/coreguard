@@ -80,6 +80,13 @@ def start(foreground):
     config = load_config()
     domain_filter = DomainFilter()
 
+    # Restore DNS if stuck on 127.0.0.1 from a previous run,
+    # otherwise filter list downloads will fail
+    from coreguard.config import DNS_BACKUP_FILE
+    if DNS_BACKUP_FILE.exists():
+        click.echo("Restoring DNS from previous session...")
+        restore_dns()
+
     click.echo("Loading filter lists...")
     count = update_all_lists(config, domain_filter)
     click.echo(f"Loaded {count:,} blocked domains from {sum(1 for f in config.filter_lists if f.get('enabled', True))} lists.")
