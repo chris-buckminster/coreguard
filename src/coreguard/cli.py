@@ -281,13 +281,8 @@ def update():
     click.echo(f"Updated. {count:,} domains in blocklist.")
 
     # If daemon is running, send SIGHUP to trigger reload
-    pid = read_pid()
-    if pid and process_exists(pid):
-        try:
-            os.kill(pid, signal.SIGHUP)
-            click.echo("Sent reload signal to running daemon.")
-        except (ProcessLookupError, PermissionError):
-            pass
+    if _send_reload_signal():
+        click.echo("Sent reload signal to running daemon.")
 
 
 @main.command()
@@ -316,6 +311,30 @@ def block(domain):
         f.write(domain + "\n")
     click.echo(f"Added '{domain}' to blocklist.")
     click.echo("Restart coreguard or run 'coreguard update' to apply.")
+
+
+def _send_reload_signal() -> bool:
+    """Send SIGHUP to the running daemon. Returns True if signal was sent."""
+    # Try PID file first
+    pid = read_pid()
+    if pid and process_exists(pid):
+        try:
+            os.kill(pid, signal.SIGHUP)
+            return True
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    # Fall back to launchctl for launchd-managed daemons
+    if LAUNCHD_PLIST_PATH.exists():
+        result = subprocess.run(
+            ["launchctl", "kill", "SIGHUP", LAUNCHD_LABEL],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return True
+
+    return False
 
 
 def _remove_from_file(path: Path, domain: str) -> bool:
@@ -360,13 +379,8 @@ def unblock(domain):
         click.echo(f"'{domain}' is already in allowlist.")
 
     # Trigger reload if daemon is running
-    pid = read_pid()
-    if pid and process_exists(pid):
-        try:
-            os.kill(pid, signal.SIGHUP)
-            click.echo("Reload signal sent — takes effect within seconds.")
-        except (ProcessLookupError, PermissionError):
-            click.echo("Run 'sudo coreguard update' to apply.")
+    if _send_reload_signal():
+        click.echo("Reload signal sent — takes effect within seconds.")
     else:
         click.echo("Daemon not running. Changes will apply on next start.")
 
