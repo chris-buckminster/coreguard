@@ -286,11 +286,15 @@ def start(ctx, foreground):
 
     if foreground:
         if json_mode:
-            click.echo(json.dumps({"status": "ok", "message": "Coreguard running.", "mode": "foreground"}))
+            data = {"status": "ok", "message": "Coreguard running.", "mode": "foreground"}
+            if dashboard_server:
+                data["dashboard_url"] = f"http://127.0.0.1:{config.dashboard_port}"
+                data["dashboard_token"] = config.dashboard_token
+            click.echo(json.dumps(data))
         else:
             click.echo(f"Coreguard running on {config.listen_address}:{config.listen_port}. Press Ctrl+C to stop.")
             if dashboard_server:
-                click.echo(f"Dashboard: http://127.0.0.1:{config.dashboard_port}")
+                click.echo(f"Dashboard: http://127.0.0.1:{config.dashboard_port} (token: {config.dashboard_token})")
 
     # Enter main loop (blocks forever)
     try:

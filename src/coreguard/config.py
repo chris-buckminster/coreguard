@@ -129,6 +129,7 @@ class Config:
     # Dashboard
     dashboard_enabled: bool = True
     dashboard_port: int = 8080
+    dashboard_token: str = ""
 
 
 def ensure_dirs() -> None:
@@ -175,6 +176,7 @@ def _config_to_dict(config: Config) -> dict[str, Any]:
         "dashboard": {
             "enabled": config.dashboard_enabled,
             "port": config.dashboard_port,
+            "token": config.dashboard_token,
         },
     }
 
@@ -233,6 +235,7 @@ def _dict_to_config(data: dict[str, Any]) -> Config:
         db = data["dashboard"]
         config.dashboard_enabled = db.get("enabled", config.dashboard_enabled)
         config.dashboard_port = db.get("port", config.dashboard_port)
+        config.dashboard_token = db.get("token", config.dashboard_token)
     return config
 
 

@@ -70,3 +70,22 @@ class TestConfig:
         config = Config()
         energized = next(f for f in config.filter_lists if f["name"] == "energized-ultimate")
         assert energized["enabled"] is False
+
+    def test_dashboard_token_default_empty(self):
+        config = Config()
+        assert config.dashboard_token == ""
+
+    def test_dashboard_token_roundtrip(self):
+        config = Config()
+        config.dashboard_token = "abc123tokenvalue"
+        d = _config_to_dict(config)
+        assert d["dashboard"]["token"] == "abc123tokenvalue"
+        restored = _dict_to_config(d)
+        assert restored.dashboard_token == "abc123tokenvalue"
+
+    def test_dashboard_token_missing_in_dict(self):
+        """Token should default to empty if not in config dict."""
+        data = {"dashboard": {"enabled": True, "port": 9090}}
+        config = _dict_to_config(data)
+        assert config.dashboard_token == ""
+        assert config.dashboard_port == 9090

@@ -48,7 +48,7 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **VPN-safe** — only modifies DNS on physical interfaces (Wi-Fi, Ethernet, USB), leaving VPN tunnels untouched
 - **Self-healing DNS** — automatically re-applies DNS settings after sleep/wake or network changes (checked every 60 seconds)
 - **Live query logging** — see exactly what's being blocked in real time
-- **Web dashboard** — real-time stats, top domains, and query log at `http://127.0.0.1:8080`
+- **Web dashboard** — full management UI at `http://127.0.0.1:8080` — view stats, manage domains, toggle filter lists, trigger updates, and stop the daemon from the browser
 - **JSON output** — `--json` flag on every command for scripting and automation (`coreguard status --json | jq`)
 - **Statistics** — track total queries, block rate, cache hit rate, and top blocked domains
 - **Graceful DNS restore** — original DNS settings are backed up and restored on stop
@@ -218,14 +218,38 @@ The `doctor` command checks:
 
 ### Dashboard
 
-When coreguard is running, a web dashboard is available at `http://127.0.0.1:8080`. It displays:
+When coreguard is running, a web dashboard is available at `http://127.0.0.1:8080`. It provides a full management UI with five tabs:
 
-- **Stats cards** — total queries, blocked count, block rate, cache hit rate, cache size, CNAME blocks
-- **Top blocked domains** — the most frequently blocked domains and their counts
-- **Top queried domains** — the most frequently queried domains and their counts
-- **Recent queries** — scrollable log of recent DNS queries with timestamp, status, type, and domain
+- **Overview** — stat cards (total queries, blocked count, block rate, cache hit rate, cache size, CNAME blocks), top blocked/queried domain tables
+- **Queries** — searchable, filterable query log with status badges
+- **Domains** — add/remove allowlist and blocklist entries, create temporary allows with a duration
+- **Lists** — enable/disable filter lists, add/remove list sources, trigger updates
+- **Settings** — view configuration, clear DNS cache, copy dashboard token, stop daemon
 
-The dashboard auto-refreshes every 5 seconds. It runs on localhost only and requires no authentication since it's not network-accessible. Disable it or change the port in `config.toml`:
+The dashboard auto-refreshes every 5 seconds and runs on localhost only.
+
+#### Authentication
+
+All read-only views (stats, queries, config) work without authentication. Mutating actions (adding domains, toggling lists, stopping the daemon) require a token. This prevents other apps or malicious websites from silently modifying your configuration.
+
+A token is auto-generated on first start and saved to `config.toml`. To retrieve it:
+
+```bash
+grep token /usr/local/etc/coreguard/config.toml
+```
+
+It's also printed when starting in foreground mode:
+
+```bash
+sudo coreguard start --foreground
+# Dashboard: http://127.0.0.1:8080 (token: a1b2c3d4...)
+```
+
+Open the dashboard, paste the token into the login prompt, and click Login. The token is stored in your browser's localStorage so you only need to enter it once.
+
+#### Configuration
+
+Disable the dashboard or change the port in `config.toml`:
 
 ```toml
 [dashboard]

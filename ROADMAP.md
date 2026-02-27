@@ -43,11 +43,11 @@
 - [x] "Last 5 blocked domains" submenu in the menubar agent
 - [x] One-click temporary allowlist from the menu
 
-**Web dashboard with full management**
-- [ ] Evolve the current read-only dashboard into a control panel
-- [ ] Allow/block domains, enable/disable filter lists, trigger updates, start/stop daemon
-- [ ] Aimed at users who aren't comfortable with CLI tooling
-- [ ] Authentication required (no longer read-only)
+**Web dashboard with full management** *(done)*
+- [x] Evolve the current read-only dashboard into a control panel
+- [x] Allow/block domains, enable/disable filter lists, trigger updates, start/stop daemon
+- [x] Aimed at users who aren't comfortable with CLI tooling
+- [x] Authentication required (no longer read-only)
 
 **Regex-based blocking rules**
 - [ ] Custom rules beyond wildcards
