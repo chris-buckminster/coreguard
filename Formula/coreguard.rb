@@ -3,8 +3,8 @@ class Coreguard < Formula
 
   desc "DNS-based ad/tracker blocking for macOS"
   homepage "https://github.com/chris-buckminster/coreguard"
-  url "https://github.com/chris-buckminster/coreguard/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "ae6ef83e257f0398123a224acb4963d7a577a5f709c1cdc1fe933b65ae476d7b"
+  url "https://github.com/chris-buckminster/coreguard/archive/refs/tags/v1.0.0.tar.gz"
+  sha256 "1d820f2e6bb7181f40e9040b6dea1cbb92dc708b9bda4cee64101caeaa23729a"
   license "MIT"
 
   depends_on :macos
