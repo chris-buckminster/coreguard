@@ -511,6 +511,61 @@ dig @127.0.0.1 google.com +short
 networksetup -getdnsservers Wi-Fi
 ```
 
+## Uninstalling
+
+To completely remove coreguard and undo all changes it made to your system:
+
+### 1. Stop the daemon and restore DNS settings
+
+```bash
+sudo coreguard stop
+```
+
+This stops the DNS server and restores your original DNS settings. Verify with:
+
+```bash
+networksetup -getdnsservers Wi-Fi
+# Should show your original DNS servers (e.g. your router's IP), not 127.0.0.1
+```
+
+### 2. Remove the launchd service (if installed)
+
+```bash
+sudo coreguard uninstall
+```
+
+This unloads and deletes `/Library/LaunchDaemons/com.coreguard.daemon.plist`.
+
+### 3. Remove the menubar agent
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.coreguard.status.plist 2>/dev/null
+rm -f ~/Library/LaunchAgents/com.coreguard.status.plist
+```
+
+### 4. Remove configuration and data
+
+```bash
+sudo rm -rf /usr/local/etc/coreguard
+```
+
+This deletes the config file, blocklists, custom allow/block lists, query log, SQLite database, PID file, DNS backup, and stats.
+
+### 5. Uninstall the package
+
+**Homebrew:**
+
+```bash
+brew uninstall coreguard
+brew untap chris-buckminster/coreguard
+```
+
+**From source:**
+
+```bash
+rm -rf /path/to/coreguard  # wherever you cloned it
+```
+
 ## Development
 
 ```bash
