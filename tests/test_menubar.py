@@ -17,6 +17,7 @@ from coreguard.menubar import (
     _is_running,
     _load_blocked_count,
     _dashboard_port,
+    _rumps_available,
     _LAUNCH_AGENT_FILE,
     _LAUNCH_AGENT_LABEL,
     ensure_menubar_running,
@@ -213,7 +214,8 @@ class TestEnsureMenubarRunning:
     @patch("coreguard.menubar.subprocess.run")
     @patch("coreguard.menubar.os.chown")
     @patch("coreguard.menubar._get_sudo_user")
-    def test_installs_and_loads_for_user(self, mock_user, mock_chown, mock_run):
+    @patch("coreguard.menubar._rumps_available", return_value=True)
+    def test_installs_and_loads_for_user(self, _mock_rumps, mock_user, mock_chown, mock_run):
         home = Path("/tmp/test_menubar_home")
         mock_user.return_value = ("testuser", 501, 20, home)
         agent_dir = home / "Library" / "LaunchAgents"
@@ -233,13 +235,20 @@ class TestEnsureMenubarRunning:
         assert cmd[:2] == ["launchctl", "asuser"]
         assert "501" in cmd
 
+    @patch("coreguard.menubar._rumps_available", return_value=False)
+    def test_noop_without_rumps(self, _mock):
+        # Should not raise or install anything.
+        ensure_menubar_running()
+
+    @patch("coreguard.menubar._rumps_available", return_value=True)
     @patch("coreguard.menubar._get_sudo_user", return_value=None)
-    def test_noop_without_sudo_user(self, _mock):
+    def test_noop_without_sudo_user(self, _mock_user, _mock_rumps):
         # Should not raise.
         ensure_menubar_running()
 
+    @patch("coreguard.menubar._rumps_available", return_value=True)
     @patch("coreguard.menubar._get_sudo_user", side_effect=Exception("boom"))
-    def test_swallows_exceptions(self, _mock):
+    def test_swallows_exceptions(self, _mock_user, _mock_rumps):
         # Should not raise — non-critical.
         ensure_menubar_running()
 

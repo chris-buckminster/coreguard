@@ -133,14 +133,25 @@ def _get_sudo_user() -> tuple[str, int, int, Path] | None:
         return None
 
 
+def _rumps_available() -> bool:
+    """Check whether rumps is importable (installed)."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("rumps") is not None
+    except Exception:
+        return False
+
+
 def ensure_menubar_running() -> None:
     """Install and start the menubar LaunchAgent for the logged-in user.
 
     Safe to call from root context (e.g. ``sudo coreguard start``).
     Uses ``SUDO_USER`` to determine the real user. Does nothing if
-    ``SUDO_USER`` is not set.
+    ``SUDO_USER`` is not set or if rumps is not installed.
     """
     try:
+        if not _rumps_available():
+            return
         user_info = _get_sudo_user()
         if user_info is None:
             return

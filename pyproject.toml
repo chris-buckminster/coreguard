@@ -13,7 +13,6 @@ dependencies = [
     "httpx[http2]>=0.24",
     "tomli>=2.0;python_version<'3.11'",
     "tomli-w>=1.0",
-    "rumps>=0.4.0",
 ]
 
 [project.scripts]
@@ -22,6 +21,7 @@ coreguard-status = "coreguard.menubar:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+menubar = ["rumps>=0.4.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
