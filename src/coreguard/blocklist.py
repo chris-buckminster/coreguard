@@ -1,12 +1,14 @@
+import json
 import logging
 import re
 import socket
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
 
-from coreguard.config import BLOCKLISTS_DIR, CUSTOM_ALLOW_FILE, CUSTOM_BLOCK_FILE, Config
+from coreguard.config import BLOCKLISTS_DIR, CUSTOM_ALLOW_FILE, CUSTOM_BLOCK_FILE, TEMP_ALLOW_FILE, Config
 from coreguard.filtering import DomainFilter
 
 logger = logging.getLogger("coreguard.blocklist")
@@ -239,6 +241,21 @@ def load_custom_list(path: Path) -> tuple[set[str], list[str]]:
     return domains, wildcards
 
 
+def load_temp_allow_list(path: Path) -> set[str]:
+    """Load temporarily allowed domains from JSON file.
+
+    Returns domains whose expiry timestamp is still in the future.
+    """
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return set()
+    now = time.time()
+    return {domain for domain, expires in data.items() if expires > now}
+
+
 def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
     """Download and parse all enabled filter lists, rebuild the domain filter.
 
@@ -281,6 +298,10 @@ def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
     custom_allowed, allowed_wildcards = load_custom_list(CUSTOM_ALLOW_FILE)
     all_blocked.update(custom_blocked)
     all_allowed.update(custom_allowed)
+
+    # Load temporarily allowed domains
+    temp_allowed = load_temp_allow_list(TEMP_ALLOW_FILE)
+    all_allowed.update(temp_allowed)
 
     # Rebuild the filter
     domain_filter.clear()

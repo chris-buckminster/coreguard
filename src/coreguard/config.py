@@ -18,6 +18,7 @@ DNS_BACKUP_FILE = CONFIG_DIR / "dns-backup.json"
 BLOCKLISTS_DIR = CONFIG_DIR / "blocklists"
 CUSTOM_ALLOW_FILE = CONFIG_DIR / "custom-allow.txt"
 CUSTOM_BLOCK_FILE = CONFIG_DIR / "custom-block.txt"
+TEMP_ALLOW_FILE = CONFIG_DIR / "temp-allow.json"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 DEFAULT_FILTER_LISTS = [

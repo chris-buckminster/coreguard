@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -18,6 +20,7 @@ from coreguard.config import (
     LOG_FILE,
     PID_FILE,
     STATS_FILE,
+    TEMP_ALLOW_FILE,
     Config,
     ensure_dirs,
     load_config,
@@ -386,34 +389,68 @@ def _remove_from_file(path: Path, domain: str) -> bool:
     return False
 
 
+_DURATION_UNITS = {"s": 1, "m": 60, "h": 3600}
+
+
+def parse_duration(s: str) -> int:
+    """Parse a duration string like '5m', '1h', '30s' into seconds."""
+    match = re.fullmatch(r"(\d+)([smh])", s)
+    if not match:
+        raise click.BadParameter(
+            f"Invalid duration '{s}'. Use a number followed by s, m, or h (e.g. 5m, 1h, 30s)."
+        )
+    return int(match.group(1)) * _DURATION_UNITS[match.group(2)]
+
+
+def _add_temp_allow(domain: str, duration_seconds: int) -> None:
+    """Add a domain to temp-allow.json with an expiry timestamp."""
+    data = {}
+    if TEMP_ALLOW_FILE.exists():
+        try:
+            data = json.loads(TEMP_ALLOW_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            data = {}
+    data[domain] = time.time() + duration_seconds
+    TEMP_ALLOW_FILE.write_text(json.dumps(data))
+
+
 @main.command()
 @click.argument("domain")
-def unblock(domain):
+@click.option("--for", "duration", default=None, help="Temporary duration (e.g. 5m, 1h, 30s)")
+def unblock(domain, duration):
     """Unblock a domain — adds to allowlist and triggers immediate reload."""
     if os.geteuid() != 0:
         click.echo("Error: requires root privileges. Run with: sudo coreguard unblock")
         sys.exit(1)
     domain = domain.lower().strip(".")
 
-    # Remove from custom block file if present
-    removed = _remove_from_file(CUSTOM_BLOCK_FILE, domain)
-    if removed:
-        click.echo(f"Removed '{domain}' from custom blocklist.")
-
-    # Add to allowlist (handles filter-list blocks too)
-    existing = set()
-    if CUSTOM_ALLOW_FILE.exists():
-        existing = {
-            line.strip().lower().strip(".")
-            for line in CUSTOM_ALLOW_FILE.read_text().splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        }
-    if domain not in existing:
-        with open(CUSTOM_ALLOW_FILE, "a") as f:
-            f.write(domain + "\n")
-        click.echo(f"Added '{domain}' to allowlist.")
+    if duration:
+        # Temporary unblock — write to temp-allow.json
+        seconds = parse_duration(duration)
+        _add_temp_allow(domain, seconds)
+        expires_at = time.strftime("%H:%M:%S", time.localtime(time.time() + seconds))
+        click.echo(f"Temporarily allowed '{domain}' for {duration} (until {expires_at}).")
     else:
-        click.echo(f"'{domain}' is already in allowlist.")
+        # Permanent unblock — original behavior
+        # Remove from custom block file if present
+        removed = _remove_from_file(CUSTOM_BLOCK_FILE, domain)
+        if removed:
+            click.echo(f"Removed '{domain}' from custom blocklist.")
+
+        # Add to allowlist (handles filter-list blocks too)
+        existing = set()
+        if CUSTOM_ALLOW_FILE.exists():
+            existing = {
+                line.strip().lower().strip(".")
+                for line in CUSTOM_ALLOW_FILE.read_text().splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            }
+        if domain not in existing:
+            with open(CUSTOM_ALLOW_FILE, "a") as f:
+                f.write(domain + "\n")
+            click.echo(f"Added '{domain}' to allowlist.")
+        else:
+            click.echo(f"'{domain}' is already in allowlist.")
 
     # Trigger reload if daemon is running
     if _send_reload_signal():

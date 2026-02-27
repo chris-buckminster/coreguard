@@ -1,7 +1,10 @@
+import json
+import time
 from pathlib import Path
 
 from coreguard.blocklist import (
     detect_and_parse,
+    load_temp_allow_list,
     parse_adblock_list,
     parse_hosts_file,
     parse_domain_list,
@@ -108,3 +111,31 @@ class TestLoadCustomList:
         assert "*.ads.com" in wildcards
         assert "ad*.example.com" in wildcards
         assert len(wildcards) == 2
+
+
+class TestLoadTempAllowList:
+    def test_load_temp_allow_list_valid(self, tmp_path):
+        f = tmp_path / "temp-allow.json"
+        future = time.time() + 300
+        f.write_text(json.dumps({"example.com": future, "test.org": future}))
+        result = load_temp_allow_list(f)
+        assert result == {"example.com", "test.org"}
+
+    def test_load_temp_allow_list_expired(self, tmp_path):
+        f = tmp_path / "temp-allow.json"
+        past = time.time() - 100
+        future = time.time() + 300
+        f.write_text(json.dumps({"expired.com": past, "valid.com": future}))
+        result = load_temp_allow_list(f)
+        assert result == {"valid.com"}
+
+    def test_load_temp_allow_list_missing_file(self, tmp_path):
+        f = tmp_path / "temp-allow.json"
+        result = load_temp_allow_list(f)
+        assert result == set()
+
+    def test_load_temp_allow_list_invalid_json(self, tmp_path):
+        f = tmp_path / "temp-allow.json"
+        f.write_text("not valid json{{{")
+        result = load_temp_allow_list(f)
+        assert result == set()

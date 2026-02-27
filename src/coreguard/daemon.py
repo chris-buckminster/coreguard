@@ -1,4 +1,5 @@
 import atexit
+import json
 import logging
 import os
 import signal
@@ -8,7 +9,7 @@ import time
 from pathlib import Path
 
 from coreguard.blocklist import update_all_lists
-from coreguard.config import PID_FILE, STATS_FILE, Config
+from coreguard.config import PID_FILE, STATS_FILE, TEMP_ALLOW_FILE, Config
 from coreguard.filtering import DomainFilter
 from coreguard.network import restore_dns
 from coreguard.stats import Stats
@@ -92,6 +93,27 @@ def cleanup(udp_server, tcp_server) -> None:
     logger.info("Cleanup complete")
 
 
+def _check_temp_expiry(config, domain_filter, cache) -> None:
+    """Remove expired entries from temp-allow.json and reload filters if any were pruned."""
+    if not TEMP_ALLOW_FILE.exists():
+        return
+    try:
+        data = json.loads(TEMP_ALLOW_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return
+    now = time.time()
+    pruned = {domain: expires for domain, expires in data.items() if expires > now}
+    if len(pruned) < len(data):
+        if pruned:
+            TEMP_ALLOW_FILE.write_text(json.dumps(pruned))
+        else:
+            TEMP_ALLOW_FILE.unlink(missing_ok=True)
+        logger.info("Temp-allow entries expired, reloading filters")
+        update_all_lists(config, domain_filter)
+        if cache:
+            cache.clear()
+
+
 def main_loop(
     config: Config,
     domain_filter: DomainFilter,
@@ -104,9 +126,11 @@ def main_loop(
     last_dns_check = time.time()
     last_stats_trim = time.time()
     last_cache_sweep = time.time()
+    last_temp_check = time.time()
     dns_check_interval = 60  # 1 minute — fast recovery after sleep/wake
     stats_trim_interval = 3600  # 1 hour
     cache_sweep_interval = 300  # 5 minutes
+    temp_check_interval = 60  # 1 minute
 
     while True:
         time.sleep(60)
@@ -128,6 +152,14 @@ def main_loop(
                     logger.info("Cache cleared after reload")
             except Exception as e:
                 logger.warning("Reload failed: %s", e)
+
+        # Check for expired temp-allow entries
+        if (time.time() - last_temp_check) >= temp_check_interval:
+            last_temp_check = time.time()
+            try:
+                _check_temp_expiry(config, domain_filter, cache)
+            except Exception as e:
+                logger.debug("Temp-allow expiry check failed: %s", e)
 
         # Periodic DNS health check — auto-re-apply if DNS has drifted
         if (time.time() - last_dns_check) >= dns_check_interval:

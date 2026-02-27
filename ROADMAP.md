@@ -26,9 +26,9 @@
 - [x] Separate process from daemon, auto-started via LaunchAgent plist
 - [x] Ships as `coreguard-status` in the Homebrew formula
 
-**Temporary allowlisting with auto-revert**
-- [ ] `coreguard unblock example.com --for 5m`
-- [ ] Timer-based auto-revert so users never forget to re-block
+**Temporary allowlisting with auto-revert** *(done)*
+- [x] `coreguard unblock example.com --for 5m`
+- [x] Timer-based auto-revert so users never forget to re-block
 
 **JSON output on all CLI commands**
 - [ ] `--json` flag on `status`, `lists`, `log`, `doctor`, etc.

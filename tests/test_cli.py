@@ -1,9 +1,12 @@
+import json
 import signal
 from unittest.mock import patch, MagicMock
 
+import click
+import pytest
 from click.testing import CliRunner
 
-from coreguard.cli import main
+from coreguard.cli import main, parse_duration
 
 
 class TestCLI:
@@ -126,3 +129,57 @@ class TestCLI:
             assert result.exit_code == 0
             mock_kill.assert_called_once_with(1234, signal.SIGHUP)
             assert "Reload signal sent" in result.output
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_unblock_with_for_flag(self, mock_pid, mock_euid, tmp_path):
+        allow_file = tmp_path / "allow.txt"
+        allow_file.touch()
+        block_file = tmp_path / "block.txt"
+        block_file.touch()
+        temp_file = tmp_path / "temp-allow.json"
+        with patch("coreguard.cli.CUSTOM_ALLOW_FILE", allow_file), \
+             patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file), \
+             patch("coreguard.cli.TEMP_ALLOW_FILE", temp_file):
+            result = self.runner.invoke(main, ["unblock", "example.com", "--for", "5m"])
+            assert result.exit_code == 0
+            assert "Temporarily allowed" in result.output
+            # Should write to temp-allow.json, not custom-allow.txt
+            assert allow_file.read_text() == ""
+            data = json.loads(temp_file.read_text())
+            assert "example.com" in data
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.process_exists", return_value=True)
+    @patch("coreguard.cli.read_pid", return_value=1234)
+    def test_unblock_for_signals_daemon(self, mock_pid, mock_exists, mock_euid, tmp_path):
+        temp_file = tmp_path / "temp-allow.json"
+        with patch("coreguard.cli.TEMP_ALLOW_FILE", temp_file), \
+             patch("coreguard.cli.os.kill") as mock_kill:
+            result = self.runner.invoke(main, ["unblock", "example.com", "--for", "10s"])
+            assert result.exit_code == 0
+            mock_kill.assert_called_once_with(1234, signal.SIGHUP)
+            assert "Reload signal sent" in result.output
+
+
+class TestParseDuration:
+    def test_parse_duration_minutes(self):
+        assert parse_duration("5m") == 300
+
+    def test_parse_duration_hours(self):
+        assert parse_duration("1h") == 3600
+
+    def test_parse_duration_seconds(self):
+        assert parse_duration("30s") == 30
+
+    def test_parse_duration_invalid(self):
+        with pytest.raises(click.BadParameter):
+            parse_duration("5x")
+
+    def test_parse_duration_no_unit(self):
+        with pytest.raises(click.BadParameter):
+            parse_duration("300")
+
+    def test_parse_duration_empty(self):
+        with pytest.raises(click.BadParameter):
+            parse_duration("")

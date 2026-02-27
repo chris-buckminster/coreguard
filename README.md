@@ -41,6 +41,7 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **Automatic updates** — filter lists refresh every 24 hours (configurable)
 - **Allowlist and blocklist** — per-domain overrides with a single command
 - **One-step unblock** — `unblock` command adds to allowlist and triggers immediate reload
+- **Temporary unblock** — `unblock --for 5m` auto-reverts after the specified duration so you never forget to re-block
 - **Menubar status agent** — at-a-glance `●`/`○` icon showing daemon health, blocked count, and quick dashboard access
 - **Auto-start on boot** — install as a macOS launchd service with a single command; menubar agent starts automatically at login
 - **Health monitoring** — macOS notifications for failures, plus a `doctor` command for diagnostics
@@ -157,6 +158,11 @@ sudo coreguard block annoying-site.com
 
 # Unblock a domain (adds to allowlist + triggers immediate reload)
 sudo coreguard unblock broken-site.com
+
+# Temporarily unblock a domain (auto-reverts after duration)
+sudo coreguard unblock broken-site.com --for 5m   # 5 minutes
+sudo coreguard unblock broken-site.com --for 1h   # 1 hour
+sudo coreguard unblock broken-site.com --for 30s  # 30 seconds
 
 # Apply changes to a running instance
 sudo coreguard update
@@ -291,6 +297,7 @@ Coreguard stores its configuration and runtime data in `/usr/local/etc/coreguard
 ├── blocklists/          # Cached filter list downloads
 ├── custom-allow.txt     # Your allowlisted domains
 ├── custom-block.txt     # Your manually blocked domains
+├── temp-allow.json      # Temporarily unblocked domains (auto-expiring)
 ├── coreguard.log        # Query log
 ├── coreguard.pid        # Daemon PID file
 ├── dns-backup.json      # Original DNS settings (for restore)
@@ -421,6 +428,12 @@ The site may be on a blocklist. The quickest fix:
 
 ```bash
 sudo coreguard unblock broken-site.com   # Adds to allowlist + reloads immediately
+```
+
+If you only need temporary access (e.g. completing a purchase), use `--for` so it auto-reverts:
+
+```bash
+sudo coreguard unblock broken-site.com --for 5m
 ```
 
 To investigate first:

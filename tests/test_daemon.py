@@ -1,8 +1,11 @@
+import json
 import signal
 import threading
+import time
 from unittest.mock import MagicMock, patch, call
 
 from coreguard.daemon import (
+    _check_temp_expiry,
     cleanup,
     is_running,
     main_loop,
@@ -263,8 +266,8 @@ class TestMainLoop:
     @patch("coreguard.daemon.time")
     def test_auto_update(self, mock_time, mock_reload, mock_update):
         self.config.update_interval_hours = 1
-        # Simulate 3601 seconds elapsed
-        mock_time.time.side_effect = [0, 0, 0, 0, 3601, 3601, 3601, 3601, 3601, 3601, 3601]
+        # Simulate 3601 seconds elapsed — enough values for all timer checks
+        mock_time.time.side_effect = [0] * 5 + [3601] * 20
         mock_time.sleep.side_effect = [None, StopIteration]
         mock_reload.is_set.return_value = False
 
@@ -274,3 +277,60 @@ class TestMainLoop:
             pass
 
         mock_update.assert_called()
+
+
+class TestCheckTempExpiry:
+    def setup_method(self):
+        self.config = Config()
+        self.domain_filter = DomainFilter()
+        self.cache = MagicMock()
+
+    @patch("coreguard.daemon.update_all_lists")
+    def test_removes_expired_entries(self, mock_update, tmp_path):
+        temp_file = tmp_path / "temp-allow.json"
+        past = time.time() - 100
+        future = time.time() + 300
+        temp_file.write_text(json.dumps({"expired.com": past, "valid.com": future}))
+
+        with patch("coreguard.daemon.TEMP_ALLOW_FILE", temp_file):
+            _check_temp_expiry(self.config, self.domain_filter, self.cache)
+
+        # Should have pruned expired entry and triggered reload
+        data = json.loads(temp_file.read_text())
+        assert "expired.com" not in data
+        assert "valid.com" in data
+        mock_update.assert_called_once_with(self.config, self.domain_filter)
+        self.cache.clear.assert_called_once()
+
+    @patch("coreguard.daemon.update_all_lists")
+    def test_no_op_when_nothing_expired(self, mock_update, tmp_path):
+        temp_file = tmp_path / "temp-allow.json"
+        future = time.time() + 300
+        temp_file.write_text(json.dumps({"valid.com": future}))
+
+        with patch("coreguard.daemon.TEMP_ALLOW_FILE", temp_file):
+            _check_temp_expiry(self.config, self.domain_filter, self.cache)
+
+        mock_update.assert_not_called()
+        self.cache.clear.assert_not_called()
+
+    @patch("coreguard.daemon.update_all_lists")
+    def test_missing_file_no_crash(self, mock_update, tmp_path):
+        temp_file = tmp_path / "temp-allow.json"  # does not exist
+
+        with patch("coreguard.daemon.TEMP_ALLOW_FILE", temp_file):
+            _check_temp_expiry(self.config, self.domain_filter, self.cache)
+
+        mock_update.assert_not_called()
+
+    @patch("coreguard.daemon.update_all_lists")
+    def test_deletes_file_when_all_expired(self, mock_update, tmp_path):
+        temp_file = tmp_path / "temp-allow.json"
+        past = time.time() - 100
+        temp_file.write_text(json.dumps({"expired.com": past}))
+
+        with patch("coreguard.daemon.TEMP_ALLOW_FILE", temp_file):
+            _check_temp_expiry(self.config, self.domain_filter, self.cache)
+
+        assert not temp_file.exists()
+        mock_update.assert_called_once()
