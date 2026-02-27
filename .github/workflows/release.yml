@@ -30,6 +30,7 @@ jobs:
       - name: Update Homebrew tap formula
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
         run: |
           VERSION="${{ github.ref_name }}"
           SHA="${{ steps.sha.outputs.sha256 }}"
@@ -53,5 +54,3 @@ jobs:
             --head "$BRANCH" \
             --title "Update coreguard to ${VERSION}" \
             --body "Automated formula update from [release ${VERSION}](https://github.com/${{ github.repository }}/releases/tag/${VERSION})."
-        env:
-          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
