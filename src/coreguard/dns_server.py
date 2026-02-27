@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 
 from dnslib import QTYPE, RR, A, AAAA, DNSRecord
 from dnslib.server import BaseResolver, DNSServer
@@ -23,7 +24,7 @@ class BlockingResolver(BaseResolver):
         stats: Stats,
         query_logger: QueryLogger,
         cache: DNSCache | None = None,
-        on_query: callable | None = None,
+        on_query: Callable | None = None,
     ) -> None:
         self.filter = domain_filter
         self.config = config
