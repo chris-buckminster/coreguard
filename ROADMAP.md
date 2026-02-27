@@ -30,10 +30,10 @@
 - [x] `coreguard unblock example.com --for 5m`
 - [x] Timer-based auto-revert so users never forget to re-block
 
-**JSON output on all CLI commands**
-- [ ] `--json` flag on `status`, `lists`, `log`, `doctor`, etc.
-- [ ] Enables scripting and automation (`coreguard status --json | jq`)
-- [ ] Proper exit codes for machine consumption
+**JSON output on all CLI commands** *(done)*
+- [x] `--json` flag on `status`, `lists`, `log`, `doctor`, etc.
+- [x] Enables scripting and automation (`coreguard status --json | jq`)
+- [x] Proper exit codes for machine consumption
 
 ---
 

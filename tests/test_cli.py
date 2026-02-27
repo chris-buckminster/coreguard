@@ -183,3 +183,278 @@ class TestParseDuration:
     def test_parse_duration_empty(self):
         with pytest.raises(click.BadParameter):
             parse_duration("")
+
+
+class TestJSONOutput:
+    """Tests for --json flag on all CLI commands."""
+
+    def setup_method(self):
+        self.runner = CliRunner()
+        self._ensure_patcher = patch("coreguard.cli.ensure_dirs")
+        self._ensure_patcher.start()
+
+    def teardown_method(self):
+        self._ensure_patcher.stop()
+
+    def _invoke_json(self, args):
+        """Invoke CLI with --json flag and parse output."""
+        result = self.runner.invoke(main, ["--json"] + args)
+        if result.output.strip():
+            data = json.loads(result.output.strip())
+        else:
+            data = None
+        return result, data
+
+    # --- status ---
+
+    @patch("coreguard.cli._port_53_responding", return_value=False)
+    @patch("coreguard.cli.read_pid", return_value=None)
+    @patch("coreguard.cli.process_exists", return_value=False)
+    def test_status_json_not_running(self, mock_exists, mock_pid, mock_port):
+        result, data = self._invoke_json(["status"])
+        assert result.exit_code == 0
+        assert data["status"] == "ok"
+        assert data["running"] is False
+        assert data["pid"] is None
+        assert data["port_53_responding"] is False
+        assert "config_dir" in data
+        assert "stats" in data
+
+    @patch("coreguard.cli._port_53_responding", return_value=True)
+    @patch("coreguard.cli.read_pid", return_value=42)
+    @patch("coreguard.cli.process_exists", return_value=True)
+    @patch("coreguard.cli.Stats.load_from_file")
+    def test_status_json_running(self, mock_stats, mock_exists, mock_pid, mock_port):
+        mock_stats.return_value = {
+            "total_queries": 100, "blocked_queries": 30, "blocked_percent": 30.0,
+            "error_queries": 0, "cache_hits": 50, "cache_misses": 50,
+            "cache_hit_rate": 50.0, "cname_blocks": 2,
+            "top_blocked": {"ads.example.com": 10}, "top_queried": {"google.com": 20},
+        }
+        result, data = self._invoke_json(["status"])
+        assert result.exit_code == 0
+        assert data["status"] == "ok"
+        assert data["running"] is True
+        assert data["pid"] == 42
+        assert data["stats"]["total_queries"] == 100
+
+    # --- lists ---
+
+    @patch("coreguard.cli.load_config")
+    def test_lists_json(self, mock_config):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result, data = self._invoke_json(["lists"])
+        assert result.exit_code == 0
+        assert data["status"] == "ok"
+        assert isinstance(data["filter_lists"], list)
+        assert len(data["filter_lists"]) > 0
+        first = data["filter_lists"][0]
+        assert "name" in first
+        assert "url" in first
+        assert "enabled" in first
+
+    # --- doctor ---
+
+    @patch("coreguard.cli._port_53_responding", return_value=False)
+    @patch("coreguard.cli.read_pid", return_value=None)
+    @patch("coreguard.cli.process_exists", return_value=False)
+    @patch("coreguard.cli.get_active_interfaces", return_value=[])
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.LOG_FILE")
+    @patch("coreguard.cli.LAUNCHD_PLIST_PATH")
+    def test_doctor_json(self, mock_plist, mock_log, mock_config, mock_ifaces,
+                         mock_exists, mock_pid, mock_port):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        mock_plist.exists.return_value = False
+        mock_log.exists.return_value = False
+        mock_bldir = MagicMock()
+        mock_bldir.glob.return_value = []
+        with patch("coreguard.config.BLOCKLISTS_DIR", mock_bldir):
+            result, data = self._invoke_json(["doctor"])
+        assert result.exit_code == 0
+        assert data["status"] in ("ok", "error")
+        assert isinstance(data["checks"], list)
+        assert isinstance(data["issues"], list)
+        # At minimum, daemon and port_53 checks should be present
+        check_names = [c["name"] for c in data["checks"]]
+        assert "daemon" in check_names
+        assert "port_53" in check_names
+
+    # --- allow / block ---
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    def test_allow_json(self, mock_euid, tmp_path):
+        allow_file = tmp_path / "allow.txt"
+        allow_file.touch()
+        with patch("coreguard.cli.CUSTOM_ALLOW_FILE", allow_file):
+            result, data = self._invoke_json(["allow", "example.com"])
+            assert result.exit_code == 0
+            assert data["status"] == "ok"
+            assert data["domain"] == "example.com"
+            assert data["action"] == "added_to_allowlist"
+            assert "example.com" in allow_file.read_text()
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    def test_block_json(self, mock_euid, tmp_path):
+        block_file = tmp_path / "block.txt"
+        block_file.touch()
+        with patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file):
+            result, data = self._invoke_json(["block", "evil.com"])
+            assert result.exit_code == 0
+            assert data["status"] == "ok"
+            assert data["domain"] == "evil.com"
+            assert data["action"] == "added_to_blocklist"
+
+    # --- unblock ---
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_unblock_json(self, mock_pid, mock_euid, tmp_path):
+        allow_file = tmp_path / "allow.txt"
+        allow_file.touch()
+        block_file = tmp_path / "block.txt"
+        block_file.touch()
+        with patch("coreguard.cli.CUSTOM_ALLOW_FILE", allow_file), \
+             patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file):
+            result, data = self._invoke_json(["unblock", "example.com"])
+            assert result.exit_code == 0
+            assert data["status"] == "ok"
+            assert data["domain"] == "example.com"
+            assert data["action"] == "added_to_allowlist"
+            assert "reload_signal_sent" in data
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_unblock_for_json(self, mock_pid, mock_euid, tmp_path):
+        allow_file = tmp_path / "allow.txt"
+        allow_file.touch()
+        block_file = tmp_path / "block.txt"
+        block_file.touch()
+        temp_file = tmp_path / "temp-allow.json"
+        with patch("coreguard.cli.CUSTOM_ALLOW_FILE", allow_file), \
+             patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file), \
+             patch("coreguard.cli.TEMP_ALLOW_FILE", temp_file):
+            result, data = self._invoke_json(["unblock", "example.com", "--for", "5m"])
+            assert result.exit_code == 0
+            assert data["status"] == "ok"
+            assert data["domain"] == "example.com"
+            assert data["action"] == "temp_allowed"
+            assert data["duration"] == "5m"
+            assert "expires_at" in data
+
+    # --- log ---
+
+    def test_log_json(self, tmp_path):
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text("line1\nline2\nline3\n")
+        with patch("coreguard.cli.LOG_FILE", log_file):
+            result, data = self._invoke_json(["log"])
+            assert result.exit_code == 0
+            assert data["status"] == "ok"
+            assert isinstance(data["lines"], list)
+            assert len(data["lines"]) == 3
+
+    def test_log_json_rejects_follow(self):
+        result, data = self._invoke_json(["log", "-f"])
+        assert result.exit_code != 0
+        assert data["status"] == "error"
+        assert "incompatible" in data["message"]
+
+    def test_log_json_no_file(self, tmp_path):
+        log_file = tmp_path / "nonexistent.log"
+        with patch("coreguard.cli.LOG_FILE", log_file):
+            result, data = self._invoke_json(["log"])
+            assert result.exit_code == 0
+            assert data["status"] == "ok"
+            assert data["lines"] == []
+
+    # --- start / stop require root ---
+
+    def test_start_json_requires_root(self):
+        with patch("coreguard.cli.os.geteuid", return_value=1000):
+            result, data = self._invoke_json(["start"])
+            assert result.exit_code != 0
+            assert data["status"] == "error"
+            assert "root" in data["message"]
+
+    def test_stop_json_requires_root(self):
+        with patch("coreguard.cli.os.geteuid", return_value=1000):
+            result, data = self._invoke_json(["stop"])
+            assert result.exit_code != 0
+            assert data["status"] == "error"
+            assert "root" in data["message"]
+
+    # --- add-list / remove-list ---
+
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    def test_add_list_json(self, mock_save, mock_config):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result, data = self._invoke_json(["add-list", "https://example.com/hosts.txt", "--name", "test-list"])
+        assert result.exit_code == 0
+        assert data["status"] == "ok"
+        assert data["name"] == "test-list"
+        assert data["action"] == "added"
+
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    def test_remove_list_json(self, mock_save, mock_config):
+        from coreguard.config import Config
+        config = Config()
+        config.filter_lists = [{"name": "test-list", "url": "https://example.com/hosts.txt", "enabled": True}]
+        mock_config.return_value = config
+        result, data = self._invoke_json(["remove-list", "test-list"])
+        assert result.exit_code == 0
+        assert data["status"] == "ok"
+        assert data["name"] == "test-list"
+        assert data["action"] == "removed"
+
+    @patch("coreguard.cli.load_config")
+    def test_remove_list_json_not_found(self, mock_config):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result, data = self._invoke_json(["remove-list", "nonexistent"])
+        assert result.exit_code == 0
+        assert data["status"] == "error"
+        assert data["action"] == "not_found"
+
+    # --- install / uninstall ---
+
+    def test_install_json_requires_root(self):
+        with patch("coreguard.cli.os.geteuid", return_value=1000):
+            result, data = self._invoke_json(["install"])
+            assert result.exit_code != 0
+            assert data["status"] == "error"
+            assert "root" in data["message"]
+
+    def test_uninstall_json_requires_root(self):
+        with patch("coreguard.cli.os.geteuid", return_value=1000):
+            result, data = self._invoke_json(["uninstall"])
+            assert result.exit_code != 0
+            assert data["status"] == "error"
+            assert "root" in data["message"]
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.LAUNCHD_PLIST_PATH")
+    def test_uninstall_json_not_installed(self, mock_plist, mock_euid):
+        mock_plist.exists.return_value = False
+        result, data = self._invoke_json(["uninstall"])
+        assert result.exit_code == 0
+        assert data["status"] == "ok"
+
+    # --- update ---
+
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.update_all_lists", return_value=50000)
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_update_json(self, mock_pid, mock_update, mock_config):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result, data = self._invoke_json(["update"])
+        assert result.exit_code == 0
+        assert data["status"] == "ok"
+        assert data["domains_count"] == 50000
+        assert "reload_signal_sent" in data

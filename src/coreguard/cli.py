@@ -144,25 +144,50 @@ def _stop_running_daemon() -> bool:
 
 @click.group()
 @click.version_option(package_name="coreguard")
-def main():
+@click.option("--json", "json_mode", is_flag=True, help="Output in JSON format")
+@click.pass_context
+def main(ctx, json_mode):
     """Coreguard - DNS-based ad/tracker blocking for macOS."""
+    ctx.ensure_object(dict)
+    ctx.obj["json"] = json_mode
     ensure_dirs()
+
+
+def _require_root(ctx, command_name):
+    """Check root privileges, emit JSON-aware error if not root."""
+    if os.geteuid() != 0:
+        msg = f"requires root privileges. Run with: sudo coreguard {command_name}"
+        if ctx.obj.get("json"):
+            click.echo(json.dumps({"status": "error", "message": msg}))
+        else:
+            click.echo(f"Error: {msg}")
+        ctx.exit(1)
+
+
+def _emit(ctx, data, human_lines):
+    """Output JSON or human-readable text based on mode."""
+    if ctx.obj.get("json"):
+        click.echo(json.dumps(data))
+    else:
+        for line in human_lines:
+            click.echo(line)
 
 
 @main.command()
 @click.option("--foreground", "-f", is_flag=True, help="Run in foreground (no daemon)")
-def start(foreground):
+@click.pass_context
+def start(ctx, foreground):
     """Start the DNS blocking server."""
-    if os.geteuid() != 0:
-        click.echo("Error: coreguard requires root privileges. Run with: sudo coreguard start")
-        sys.exit(1)
+    _require_root(ctx, "start")
+    json_mode = ctx.obj.get("json")
 
     # Start the menubar status agent for the logged-in user.
     ensure_menubar_running()
 
     # If launchd service exists but is unloaded (after stop), reload it
     if not foreground and LAUNCHD_PLIST_PATH.exists() and not _is_launchd_loaded():
-        click.echo("Starting coreguard via launchd service...")
+        if not json_mode:
+            click.echo("Starting coreguard via launchd service...")
         result = subprocess.run(
             ["launchctl", "load", str(LAUNCHD_PLIST_PATH)],
             capture_output=True,
@@ -174,17 +199,24 @@ def start(foreground):
             for _ in range(30):
                 time.sleep(1)
                 if _port_53_responding():
-                    click.echo("Coreguard started.")
+                    _emit(ctx,
+                        {"status": "ok", "message": "Coreguard started.", "mode": "launchd"},
+                        ["Coreguard started."])
                     return
-            click.echo("Coreguard service loaded but daemon is still starting...")
+            _emit(ctx,
+                {"status": "ok", "message": "Coreguard service loaded but daemon is still starting.", "mode": "launchd"},
+                ["Coreguard service loaded but daemon is still starting..."])
             return
         else:
-            click.echo(f"Warning: launchctl load failed: {result.stderr.strip()}")
-            click.echo("Falling back to manual start...")
+            if not json_mode:
+                click.echo(f"Warning: launchctl load failed: {result.stderr.strip()}")
+                click.echo("Falling back to manual start...")
 
     if is_running() or _port_53_responding():
-        click.echo("Coreguard is already running.")
-        sys.exit(1)
+        _emit(ctx,
+            {"status": "error", "message": "Coreguard is already running."},
+            ["Coreguard is already running."])
+        ctx.exit(1)
 
     _setup_logging(foreground)
     config = load_config()
@@ -192,19 +224,25 @@ def start(foreground):
 
     # Restore DNS if stuck from a previous run
     if DNS_BACKUP_FILE.exists():
-        click.echo("Restoring DNS from previous session...")
+        if not json_mode:
+            click.echo("Restoring DNS from previous session...")
         restore_dns()
 
-    click.echo("Loading filter lists...")
+    if not json_mode:
+        click.echo("Loading filter lists...")
     count = update_all_lists(config, domain_filter)
     enabled_count = sum(1 for f in config.filter_lists if f.get("enabled", True))
-    click.echo(f"Loaded {count:,} blocked domains from {enabled_count} lists.")
+    if not json_mode:
+        click.echo(f"Loaded {count:,} blocked domains from {enabled_count} lists.")
 
     stats = Stats()
     query_logger = QueryLogger(LOG_FILE, max_bytes=config.log_max_size_mb * 1024 * 1024)
 
     if not foreground:
-        click.echo("Starting coreguard daemon...")
+        if not json_mode:
+            click.echo("Starting coreguard daemon...")
+        if json_mode:
+            click.echo(json.dumps({"status": "ok", "message": "Daemon starting.", "mode": "daemon"}))
         daemonize()
 
     # Write PID file (both daemon and foreground mode)
@@ -224,8 +262,11 @@ def start(foreground):
         udp_server, tcp_server, cache = start_dns_server(config, domain_filter, stats, query_logger)
     except Exception as e:
         msg = f"Failed to start DNS server: {e}"
-        click.echo(f"Error: {msg}")
-        click.echo("Is port 53 already in use? Check with: sudo lsof -i :53")
+        if json_mode:
+            click.echo(json.dumps({"status": "error", "message": msg}))
+        else:
+            click.echo(f"Error: {msg}")
+            click.echo("Is port 53 already in use? Check with: sudo lsof -i :53")
         notify_startup_failure(msg)
         PID_FILE.unlink(missing_ok=True)
         sys.exit(1)
@@ -244,9 +285,12 @@ def start(foreground):
     setup_signal_handlers(cleanup_fn)
 
     if foreground:
-        click.echo(f"Coreguard running on {config.listen_address}:{config.listen_port}. Press Ctrl+C to stop.")
-        if dashboard_server:
-            click.echo(f"Dashboard: http://127.0.0.1:{config.dashboard_port}")
+        if json_mode:
+            click.echo(json.dumps({"status": "ok", "message": "Coreguard running.", "mode": "foreground"}))
+        else:
+            click.echo(f"Coreguard running on {config.listen_address}:{config.listen_port}. Press Ctrl+C to stop.")
+            if dashboard_server:
+                click.echo(f"Dashboard: http://127.0.0.1:{config.dashboard_port}")
 
     # Enter main loop (blocks forever)
     try:
@@ -256,11 +300,10 @@ def start(foreground):
 
 
 @main.command()
-def stop():
+@click.pass_context
+def stop(ctx):
     """Stop the DNS blocking server and restore DNS settings."""
-    if os.geteuid() != 0:
-        click.echo("Error: requires root privileges. Run with: sudo coreguard stop")
-        sys.exit(1)
+    _require_root(ctx, "stop")
 
     was_running = _stop_running_daemon()
 
@@ -268,14 +311,19 @@ def stop():
     restore_dns()
 
     if was_running:
-        click.echo("Coreguard stopped. DNS settings restored.")
+        msg = "Coreguard stopped. DNS settings restored."
     else:
-        click.echo("Coreguard was not running. DNS settings restored.")
+        msg = "Coreguard was not running. DNS settings restored."
+    _emit(ctx,
+        {"status": "ok", "message": msg, "was_running": was_running},
+        [msg])
 
 
 @main.command()
-def status():
+@click.pass_context
+def status(ctx):
     """Show coreguard status and statistics."""
+    json_mode = ctx.obj.get("json")
     pid = read_pid()
     pid_running = pid is not None and process_exists(pid)
     port_responding = _port_53_responding()
@@ -283,9 +331,28 @@ def status():
     if not pid_running and not port_responding:
         # Check if launchd service is starting up
         if LAUNCHD_PLIST_PATH.exists() and _is_launchd_loaded():
-            click.echo("Coreguard is starting up (launchd service loaded)...")
+            if json_mode:
+                click.echo(json.dumps({"status": "ok", "running": "starting", "pid": None, "port_53_responding": False, "config_dir": str(CONFIG_DIR), "stats": {}}))
+            else:
+                click.echo("Coreguard is starting up (launchd service loaded)...")
             return
-        click.echo("Coreguard is not running.")
+        if json_mode:
+            click.echo(json.dumps({"status": "ok", "running": False, "pid": None, "port_53_responding": False, "config_dir": str(CONFIG_DIR), "stats": {}}))
+        else:
+            click.echo("Coreguard is not running.")
+        return
+
+    stats = Stats.load_from_file(STATS_FILE)
+
+    if json_mode:
+        click.echo(json.dumps({
+            "status": "ok",
+            "running": True,
+            "pid": pid if pid_running else None,
+            "port_53_responding": port_responding,
+            "config_dir": str(CONFIG_DIR),
+            "stats": stats,
+        }))
         return
 
     if pid_running:
@@ -295,7 +362,6 @@ def status():
     click.echo(f"Config: {CONFIG_DIR}")
     click.echo()
 
-    stats = Stats.load_from_file(STATS_FILE)
     click.echo(f"  Total queries:   {stats['total_queries']:,}")
     click.echo(f"  Blocked queries: {stats['blocked_queries']:,} ({stats['blocked_percent']}%)")
     click.echo(f"  Cache hits:      {stats.get('cache_hits', 0):,} ({stats.get('cache_hit_rate', 0.0)}%)")
@@ -311,46 +377,54 @@ def status():
 
 
 @main.command()
-def update():
+@click.pass_context
+def update(ctx):
     """Force update all filter lists."""
+    json_mode = ctx.obj.get("json")
     config = load_config()
     domain_filter = DomainFilter()
 
-    click.echo("Updating filter lists...")
+    if not json_mode:
+        click.echo("Updating filter lists...")
     count = update_all_lists(config, domain_filter)
-    click.echo(f"Updated. {count:,} domains in blocklist.")
+    reload_sent = _send_reload_signal()
 
-    # If daemon is running, send SIGHUP to trigger reload
-    if _send_reload_signal():
-        click.echo("Sent reload signal to running daemon.")
+    human_lines = [f"Updated. {count:,} domains in blocklist."]
+    if reload_sent:
+        human_lines.append("Sent reload signal to running daemon.")
+    _emit(ctx,
+        {"status": "ok", "domains_count": count, "reload_signal_sent": reload_sent},
+        human_lines)
 
 
 @main.command()
 @click.argument("domain")
-def allow(domain):
+@click.pass_context
+def allow(ctx, domain):
     """Add a domain to the allowlist."""
-    if os.geteuid() != 0:
-        click.echo("Error: requires root privileges. Run with: sudo coreguard allow")
-        sys.exit(1)
+    _require_root(ctx, "allow")
     domain = domain.lower().strip(".")
     with open(CUSTOM_ALLOW_FILE, "a") as f:
         f.write(domain + "\n")
-    click.echo(f"Added '{domain}' to allowlist.")
-    click.echo("Restart coreguard or run 'coreguard update' to apply.")
+    _emit(ctx,
+        {"status": "ok", "domain": domain, "action": "added_to_allowlist"},
+        [f"Added '{domain}' to allowlist.",
+         "Restart coreguard or run 'coreguard update' to apply."])
 
 
 @main.command()
 @click.argument("domain")
-def block(domain):
+@click.pass_context
+def block(ctx, domain):
     """Add a domain to the blocklist."""
-    if os.geteuid() != 0:
-        click.echo("Error: requires root privileges. Run with: sudo coreguard block")
-        sys.exit(1)
+    _require_root(ctx, "block")
     domain = domain.lower().strip(".")
     with open(CUSTOM_BLOCK_FILE, "a") as f:
         f.write(domain + "\n")
-    click.echo(f"Added '{domain}' to blocklist.")
-    click.echo("Restart coreguard or run 'coreguard update' to apply.")
+    _emit(ctx,
+        {"status": "ok", "domain": domain, "action": "added_to_blocklist"},
+        [f"Added '{domain}' to blocklist.",
+         "Restart coreguard or run 'coreguard update' to apply."])
 
 
 def _send_reload_signal() -> bool:
@@ -417,11 +491,11 @@ def _add_temp_allow(domain: str, duration_seconds: int) -> None:
 @main.command()
 @click.argument("domain")
 @click.option("--for", "duration", default=None, help="Temporary duration (e.g. 5m, 1h, 30s)")
-def unblock(domain, duration):
+@click.pass_context
+def unblock(ctx, domain, duration):
     """Unblock a domain — adds to allowlist and triggers immediate reload."""
-    if os.geteuid() != 0:
-        click.echo("Error: requires root privileges. Run with: sudo coreguard unblock")
-        sys.exit(1)
+    _require_root(ctx, "unblock")
+    json_mode = ctx.obj.get("json")
     domain = domain.lower().strip(".")
 
     if duration:
@@ -429,12 +503,15 @@ def unblock(domain, duration):
         seconds = parse_duration(duration)
         _add_temp_allow(domain, seconds)
         expires_at = time.strftime("%H:%M:%S", time.localtime(time.time() + seconds))
-        click.echo(f"Temporarily allowed '{domain}' for {duration} (until {expires_at}).")
+        if not json_mode:
+            click.echo(f"Temporarily allowed '{domain}' for {duration} (until {expires_at}).")
+        result_data = {"status": "ok", "domain": domain, "action": "temp_allowed",
+                       "duration": duration, "expires_at": expires_at}
     else:
         # Permanent unblock — original behavior
         # Remove from custom block file if present
         removed = _remove_from_file(CUSTOM_BLOCK_FILE, domain)
-        if removed:
+        if removed and not json_mode:
             click.echo(f"Removed '{domain}' from custom blocklist.")
 
         # Add to allowlist (handles filter-list blocks too)
@@ -448,24 +525,44 @@ def unblock(domain, duration):
         if domain not in existing:
             with open(CUSTOM_ALLOW_FILE, "a") as f:
                 f.write(domain + "\n")
-            click.echo(f"Added '{domain}' to allowlist.")
+            if not json_mode:
+                click.echo(f"Added '{domain}' to allowlist.")
+            action = "added_to_allowlist"
         else:
-            click.echo(f"'{domain}' is already in allowlist.")
+            if not json_mode:
+                click.echo(f"'{domain}' is already in allowlist.")
+            action = "already_in_allowlist"
+        result_data = {"status": "ok", "domain": domain, "action": action}
 
     # Trigger reload if daemon is running
-    if _send_reload_signal():
-        click.echo("Reload signal sent — takes effect within seconds.")
+    reload_sent = _send_reload_signal()
+    result_data["reload_signal_sent"] = reload_sent
+
+    if json_mode:
+        click.echo(json.dumps(result_data))
     else:
-        click.echo("Daemon not running. Changes will apply on next start.")
+        if reload_sent:
+            click.echo("Reload signal sent — takes effect within seconds.")
+        else:
+            click.echo("Daemon not running. Changes will apply on next start.")
 
 
 @main.command()
 @click.option("--follow", "-f", is_flag=True, help="Follow log output in real time")
 @click.option("--lines", "-n", default=20, help="Number of lines to show")
-def log(follow, lines):
+@click.pass_context
+def log(ctx, follow, lines):
     """Show the query log."""
+    json_mode = ctx.obj.get("json")
+
+    if json_mode and follow:
+        click.echo(json.dumps({"status": "error", "message": "--json and --follow are incompatible. Follow mode is streaming and cannot produce a single JSON object."}))
+        ctx.exit(1)
+
     if not LOG_FILE.exists():
-        click.echo("No log file found. Start coreguard first.")
+        _emit(ctx,
+            {"status": "ok", "lines": []},
+            ["No log file found. Start coreguard first."])
         return
 
     if follow:
@@ -479,28 +576,43 @@ def log(follow, lines):
             capture_output=True,
             text=True,
         )
-        click.echo(result.stdout)
+        if json_mode:
+            log_lines = [l for l in result.stdout.splitlines() if l]
+            click.echo(json.dumps({"status": "ok", "lines": log_lines}))
+        else:
+            click.echo(result.stdout)
 
 
 @main.command()
-def lists():
+@click.pass_context
+def lists(ctx):
     """Show active filter lists."""
+    json_mode = ctx.obj.get("json")
     config = load_config()
-    click.echo("Filter lists:")
-    for flist in config.filter_lists:
-        status_str = (
-            click.style("enabled", fg="green")
-            if flist.get("enabled", True)
-            else click.style("disabled", fg="red")
-        )
-        click.echo(f"  [{status_str}] {flist['name']}")
-        click.echo(f"           {flist['url']}")
+
+    if json_mode:
+        filter_lists = [
+            {"name": f["name"], "url": f["url"], "enabled": f.get("enabled", True)}
+            for f in config.filter_lists
+        ]
+        click.echo(json.dumps({"status": "ok", "filter_lists": filter_lists}))
+    else:
+        click.echo("Filter lists:")
+        for flist in config.filter_lists:
+            status_str = (
+                click.style("enabled", fg="green")
+                if flist.get("enabled", True)
+                else click.style("disabled", fg="red")
+            )
+            click.echo(f"  [{status_str}] {flist['name']}")
+            click.echo(f"           {flist['url']}")
 
 
 @main.command("add-list")
 @click.argument("url")
 @click.option("--name", default=None, help="Name for the filter list")
-def add_list(url, name):
+@click.pass_context
+def add_list(ctx, url, name):
     """Add a new filter list source by URL."""
     if name is None:
         name = url.rstrip("/").split("/")[-1].split(".")[0]
@@ -509,35 +621,47 @@ def add_list(url, name):
 
     for flist in config.filter_lists:
         if flist["url"] == url:
-            click.echo(f"List already exists: {flist['name']}")
+            _emit(ctx,
+                {"status": "ok", "name": flist["name"], "url": url, "action": "already_exists"},
+                [f"List already exists: {flist['name']}"])
             return
 
     config.filter_lists.append({"name": name, "url": url, "enabled": True})
     save_config(config)
-    click.echo(f"Added list '{name}'.")
-    click.echo("Run 'sudo coreguard update' to download and apply.")
+    _emit(ctx,
+        {"status": "ok", "name": name, "url": url, "action": "added"},
+        [f"Added list '{name}'.",
+         "Run 'sudo coreguard update' to download and apply."])
 
 
 @main.command("remove-list")
 @click.argument("name")
-def remove_list(name):
+@click.pass_context
+def remove_list(ctx, name):
     """Remove a filter list by name."""
     config = load_config()
     original_count = len(config.filter_lists)
     config.filter_lists = [f for f in config.filter_lists if f["name"] != name]
 
     if len(config.filter_lists) == original_count:
-        click.echo(f"No list found with name '{name}'.")
+        _emit(ctx,
+            {"status": "error", "name": name, "action": "not_found"},
+            [f"No list found with name '{name}'."])
         return
 
     save_config(config)
-    click.echo(f"Removed list '{name}'.")
-    click.echo("Run 'sudo coreguard update' to apply.")
+    _emit(ctx,
+        {"status": "ok", "name": name, "action": "removed"},
+        [f"Removed list '{name}'.",
+         "Run 'sudo coreguard update' to apply."])
 
 
 @main.command()
-def doctor():
+@click.pass_context
+def doctor(ctx):
     """Run diagnostics to check coreguard health."""
+    json_mode = ctx.obj.get("json")
+    checks = []
     issues = []
     config = load_config()
 
@@ -547,11 +671,11 @@ def doctor():
     port_responding = _port_53_responding()
 
     if pid_running:
-        click.echo(click.style("[OK]", fg="green") + f"  Daemon is running (PID: {pid})")
+        checks.append({"name": "daemon", "status": "ok", "message": f"Daemon is running (PID: {pid})"})
     elif port_responding:
-        click.echo(click.style("[OK]", fg="green") + "  Daemon is running (port 53 responding)")
+        checks.append({"name": "daemon", "status": "ok", "message": "Daemon is running (port 53 responding)"})
     else:
-        click.echo(click.style("[FAIL]", fg="red") + "  Daemon is not running")
+        checks.append({"name": "daemon", "status": "fail", "message": "Daemon is not running"})
         issues.append("Daemon is not running. Start with: sudo coreguard start")
 
     # 2. Check DNS configuration
@@ -559,27 +683,21 @@ def doctor():
     for service in get_active_interfaces():
         servers = get_current_dns(service)
         if servers and "127.0.0.1" in servers:
-            click.echo(click.style("[OK]", fg="green") + f"  DNS for '{service}' points to 127.0.0.1")
+            checks.append({"name": f"dns_{service}", "status": "ok", "message": f"DNS for '{service}' points to 127.0.0.1"})
         elif not servers:
-            click.echo(
-                click.style("[WARN]", fg="yellow")
-                + f"  DNS for '{service}' uses DHCP defaults (not coreguard)"
-            )
+            checks.append({"name": f"dns_{service}", "status": "warn", "message": f"DNS for '{service}' uses DHCP defaults (not coreguard)"})
             dns_ok = False
         else:
-            click.echo(
-                click.style("[FAIL]", fg="red")
-                + f"  DNS for '{service}' points to {', '.join(servers)} (not coreguard)"
-            )
+            checks.append({"name": f"dns_{service}", "status": "fail", "message": f"DNS for '{service}' points to {', '.join(servers)} (not coreguard)"})
             dns_ok = False
     if not dns_ok:
         issues.append("System DNS is not pointing to coreguard. Restart with: sudo coreguard start")
 
     # 3. Check if port 53 is responding (reuse result from step 1)
     if port_responding:
-        click.echo(click.style("[OK]", fg="green") + "  Port 53 is responding on 127.0.0.1")
+        checks.append({"name": "port_53", "status": "ok", "message": "Port 53 is responding on 127.0.0.1"})
     else:
-        click.echo(click.style("[FAIL]", fg="red") + "  Port 53 is not responding on 127.0.0.1")
+        checks.append({"name": "port_53", "status": "fail", "message": "Port 53 is not responding on 127.0.0.1"})
         issues.append("DNS server is not responding on port 53")
 
     # 4. Check filter lists
@@ -591,48 +709,56 @@ def doctor():
         newest = max(cached_lists, key=lambda p: p.stat().st_mtime)
         age_hours = (time.time() - newest.stat().st_mtime) / 3600
         if age_hours < 48:
-            click.echo(
-                click.style("[OK]", fg="green")
-                + f"  {len(cached_lists)} filter lists cached (last update: {age_hours:.0f}h ago)"
-            )
+            checks.append({"name": "filter_lists", "status": "ok",
+                           "message": f"{len(cached_lists)} filter lists cached (last update: {age_hours:.0f}h ago)",
+                           "cached_count": len(cached_lists), "age_hours": round(age_hours, 1)})
         else:
-            click.echo(
-                click.style("[WARN]", fg="yellow")
-                + f"  Filter lists are stale (last update: {age_hours:.0f}h ago)"
-            )
+            checks.append({"name": "filter_lists", "status": "warn",
+                           "message": f"Filter lists are stale (last update: {age_hours:.0f}h ago)",
+                           "cached_count": len(cached_lists), "age_hours": round(age_hours, 1)})
             issues.append("Filter lists haven't been updated recently. Run: sudo coreguard update")
     else:
-        click.echo(click.style("[FAIL]", fg="red") + "  No cached filter lists found")
+        checks.append({"name": "filter_lists", "status": "fail", "message": "No cached filter lists found"})
         issues.append("No filter lists downloaded. Run: sudo coreguard update")
 
-    click.echo(
-        click.style("[INFO]", fg="blue")
-        + f"  {enabled_count} filter lists enabled, {len(config.filter_lists)} total configured"
-    )
+    checks.append({"name": "filter_lists_config", "status": "info",
+                   "message": f"{enabled_count} filter lists enabled, {len(config.filter_lists)} total configured",
+                   "enabled_count": enabled_count, "total_count": len(config.filter_lists)})
 
     # 5. Check launchd service (plist existence — launchctl list requires root)
     if LAUNCHD_PLIST_PATH.exists():
-        click.echo(
-            click.style("[OK]", fg="green") + "  Launchd service installed (auto-start on boot)"
-        )
+        checks.append({"name": "launchd", "status": "ok", "message": "Launchd service installed (auto-start on boot)"})
     else:
-        click.echo(click.style("[INFO]", fg="blue") + "  Launchd service not installed (no auto-start)")
+        checks.append({"name": "launchd", "status": "info", "message": "Launchd service not installed (no auto-start)"})
 
     # 6. Check log file
     if LOG_FILE.exists():
         log_size_mb = LOG_FILE.stat().st_size / (1024 * 1024)
-        click.echo(click.style("[OK]", fg="green") + f"  Log file: {LOG_FILE} ({log_size_mb:.1f} MB)")
+        checks.append({"name": "log_file", "status": "ok",
+                       "message": f"Log file: {LOG_FILE} ({log_size_mb:.1f} MB)",
+                       "path": str(LOG_FILE), "size_mb": round(log_size_mb, 1)})
     else:
-        click.echo(click.style("[INFO]", fg="blue") + "  No log file yet")
+        checks.append({"name": "log_file", "status": "info", "message": "No log file yet"})
 
-    # Summary
-    click.echo()
-    if not issues:
-        click.echo(click.style("All checks passed. Coreguard is healthy.", fg="green"))
+    # Output
+    if json_mode:
+        overall = "ok" if not issues else "error"
+        click.echo(json.dumps({"status": overall, "checks": checks, "issues": issues}))
     else:
-        click.echo(click.style(f"{len(issues)} issue(s) found:", fg="red"))
-        for issue in issues:
-            click.echo(f"  - {issue}")
+        _STATUS_COLORS = {"ok": "green", "fail": "red", "warn": "yellow", "info": "blue"}
+        _STATUS_LABELS = {"ok": "OK", "fail": "FAIL", "warn": "WARN", "info": "INFO"}
+        for check in checks:
+            color = _STATUS_COLORS.get(check["status"], "white")
+            label = _STATUS_LABELS.get(check["status"], check["status"].upper())
+            click.echo(click.style(f"[{label}]", fg=color) + f"  {check['message']}")
+
+        click.echo()
+        if not issues:
+            click.echo(click.style("All checks passed. Coreguard is healthy.", fg="green"))
+        else:
+            click.echo(click.style(f"{len(issues)} issue(s) found:", fg="red"))
+            for issue in issues:
+                click.echo(f"  - {issue}")
 
 
 def _get_coreguard_bin() -> str:
@@ -678,21 +804,24 @@ def _generate_plist(coreguard_bin: str) -> str:
 
 
 @main.command()
-def install():
+@click.pass_context
+def install(ctx):
     """Install coreguard as a system service (auto-start on boot)."""
-    if os.geteuid() != 0:
-        click.echo("Error: requires root privileges. Run with: sudo coreguard install")
-        sys.exit(1)
+    _require_root(ctx, "install")
+    json_mode = ctx.obj.get("json")
 
     try:
         coreguard_bin = _get_coreguard_bin()
     except FileNotFoundError as e:
-        click.echo(f"Error: {e}")
-        sys.exit(1)
+        _emit(ctx,
+            {"status": "error", "message": str(e)},
+            [f"Error: {e}"])
+        ctx.exit(1)
 
     # Stop any running instance first
     if is_running():
-        click.echo("Stopping running instance...")
+        if not json_mode:
+            click.echo("Stopping running instance...")
         _stop_running_daemon()
         restore_dns()
 
@@ -714,28 +843,35 @@ def install():
         timeout=10,
     )
     if result.returncode != 0:
-        click.echo(f"Error: launchctl load failed: {result.stderr.strip()}")
+        msg = f"launchctl load failed: {result.stderr.strip()}"
+        _emit(ctx,
+            {"status": "error", "message": msg},
+            [f"Error: {msg}"])
         LAUNCHD_PLIST_PATH.unlink(missing_ok=True)
-        sys.exit(1)
+        ctx.exit(1)
 
     # Also install the menubar status agent for the logged-in user.
     ensure_menubar_running()
 
-    click.echo("Coreguard installed as system service.")
-    click.echo(f"  Executable: {coreguard_bin}")
-    click.echo(f"  Plist: {LAUNCHD_PLIST_PATH}")
-    click.echo("Coreguard will now start automatically on boot.")
+    _emit(ctx,
+        {"status": "ok", "message": "Coreguard installed as system service.",
+         "executable": coreguard_bin, "plist": str(LAUNCHD_PLIST_PATH)},
+        ["Coreguard installed as system service.",
+         f"  Executable: {coreguard_bin}",
+         f"  Plist: {LAUNCHD_PLIST_PATH}",
+         "Coreguard will now start automatically on boot."])
 
 
 @main.command()
-def uninstall():
+@click.pass_context
+def uninstall(ctx):
     """Remove coreguard system service (disable auto-start)."""
-    if os.geteuid() != 0:
-        click.echo("Error: requires root privileges. Run with: sudo coreguard uninstall")
-        sys.exit(1)
+    _require_root(ctx, "uninstall")
 
     if not LAUNCHD_PLIST_PATH.exists():
-        click.echo("Coreguard is not installed as a system service.")
+        _emit(ctx,
+            {"status": "ok", "message": "Coreguard is not installed as a system service."},
+            ["Coreguard is not installed as a system service."])
         return
 
     # Unload the service (this stops the process)
@@ -757,4 +893,6 @@ def uninstall():
     # Clean up
     LAUNCHD_PLIST_PATH.unlink(missing_ok=True)
     PID_FILE.unlink(missing_ok=True)
-    click.echo("Coreguard system service removed. It will no longer start on boot.")
+    _emit(ctx,
+        {"status": "ok", "message": "Coreguard system service removed. It will no longer start on boot."},
+        ["Coreguard system service removed. It will no longer start on boot."])
