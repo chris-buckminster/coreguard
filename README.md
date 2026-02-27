@@ -42,7 +42,7 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **Allowlist and blocklist** — per-domain overrides with a single command
 - **One-step unblock** — `unblock` command adds to allowlist and triggers immediate reload
 - **Temporary unblock** — `unblock --for 5m` auto-reverts after the specified duration so you never forget to re-block
-- **Menubar status agent** — at-a-glance `●`/`○` icon showing daemon health, blocked count, and quick dashboard access
+- **Menubar status agent** — at-a-glance `●`/`○` icon showing daemon health, blocked count, recent blocked domains, and one-click temporary unblock
 - **Auto-start on boot** — install as a macOS launchd service with a single command; menubar agent starts automatically at login
 - **Health monitoring** — macOS notifications for failures, plus a `doctor` command for diagnostics
 - **VPN-safe** — only modifies DNS on physical interfaces (Wi-Fi, Ethernet, USB), leaving VPN tunnels untouched
@@ -144,6 +144,7 @@ When you start or install coreguard, a lightweight menubar agent launches automa
 
 - **`●`** when the daemon is running, **`○`** when stopped
 - Blocked query count
+- **Recent Blocked** submenu — the last 5 unique blocked domains, each clickable to temporarily unblock for 5 minutes (triggers a standard macOS admin password prompt)
 - Quick "Open Dashboard" link
 
 The agent polls every 5 seconds and runs as a separate user-level process. It auto-starts at login via a LaunchAgent — no extra setup required.
@@ -452,7 +453,9 @@ This will detect the backup file and restore your original DNS settings even if 
 
 ### A website is broken
 
-The site may be on a blocklist. The quickest fix:
+The site may be on a blocklist. The quickest fix is the **menubar**: click the `●` icon, open **Recent Blocked**, and click the domain — it's unblocked for 5 minutes with a single click.
+
+From the terminal:
 
 ```bash
 sudo coreguard unblock broken-site.com   # Adds to allowlist + reloads immediately

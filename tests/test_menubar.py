@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -11,11 +12,14 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 
 from coreguard.menubar import (
+    _DOMAIN_RE,
     _format_blocked_count,
     _generate_launch_agent_plist,
+    _get_coreguard_path,
     _get_sudo_user,
     _is_running,
     _load_blocked_count,
+    _load_recent_blocked,
     _dashboard_port,
     _rumps_available,
     _LAUNCH_AGENT_FILE,
@@ -284,6 +288,28 @@ class TestRemoveMenubar:
 # ---------------------------------------------------------------------------
 
 
+class _MockMenuItem:
+    """Minimal stand-in for rumps.MenuItem that supports submenu operations."""
+
+    def __init__(self, title="", callback=None):
+        self.title = title
+        self._callback = callback
+        self._children: list[_MockMenuItem] = []
+
+    def set_callback(self, cb):
+        self._callback = cb
+
+    def clear(self):
+        self._children.clear()
+
+    def add(self, item):
+        self._children.append(item)
+
+    @property
+    def values(self):
+        return list(self._children)
+
+
 def _make_mock_rumps():
     """Create a mock rumps module suitable for sys.modules injection."""
     mock = types.ModuleType("rumps")
@@ -291,10 +317,11 @@ def _make_mock_rumps():
         "__init__": lambda self, title, quit_button=None: None,
         "run": lambda self: None,
     })
-    mock.MenuItem = MagicMock
+    mock.MenuItem = _MockMenuItem
     # Use a lambda so the callback arg isn't treated as MagicMock's spec.
     mock.Timer = lambda callback, interval: MagicMock()
     mock.clicked = lambda name: lambda fn: fn  # no-op decorator
+    mock.notification = MagicMock()
     return mock
 
 
@@ -406,3 +433,183 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             main([])
         assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# _load_recent_blocked
+# ---------------------------------------------------------------------------
+
+
+class TestLoadRecentBlocked:
+    def test_no_log_file(self, tmp_path):
+        with patch("coreguard.menubar.LOG_FILE", tmp_path / "nonexistent.log"):
+            assert _load_recent_blocked() == []
+
+    def test_parses_blocked_entries(self, tmp_path):
+        log = tmp_path / "coreguard.log"
+        log.write_text(
+            "2026-02-26 14:30:01 [coreguard.queries] INFO BLOCKED A ads.example.com\n"
+            "2026-02-26 14:30:02 [coreguard.queries] INFO BLOCKED AAAA tracker.foo.com\n"
+        )
+        with patch("coreguard.menubar.LOG_FILE", log):
+            result = _load_recent_blocked()
+        assert result == ["tracker.foo.com", "ads.example.com"]
+
+    def test_deduplicates(self, tmp_path):
+        log = tmp_path / "coreguard.log"
+        log.write_text(
+            "2026-02-26 14:30:01 [coreguard.queries] INFO BLOCKED A ads.example.com\n"
+            "2026-02-26 14:30:02 [coreguard.queries] INFO BLOCKED A tracker.foo.com\n"
+            "2026-02-26 14:30:03 [coreguard.queries] INFO BLOCKED AAAA ads.example.com\n"
+        )
+        with patch("coreguard.menubar.LOG_FILE", log):
+            result = _load_recent_blocked()
+        # ads.example.com appears twice but should only show once (most recent first)
+        assert result == ["ads.example.com", "tracker.foo.com"]
+
+    def test_skips_allowed(self, tmp_path):
+        log = tmp_path / "coreguard.log"
+        log.write_text(
+            "2026-02-26 14:30:01 [coreguard.queries] INFO ALLOWED A safe.example.com\n"
+            "2026-02-26 14:30:02 [coreguard.queries] INFO BLOCKED A ads.example.com\n"
+        )
+        with patch("coreguard.menubar.LOG_FILE", log):
+            result = _load_recent_blocked()
+        assert result == ["ads.example.com"]
+
+    def test_limit(self, tmp_path):
+        log = tmp_path / "coreguard.log"
+        lines = [
+            f"2026-02-26 14:30:{i:02d} [coreguard.queries] INFO BLOCKED A domain{i}.com\n"
+            for i in range(10)
+        ]
+        log.write_text("".join(lines))
+        with patch("coreguard.menubar.LOG_FILE", log):
+            result = _load_recent_blocked(limit=3)
+        assert len(result) == 3
+        # Most recent (highest index) first
+        assert result == ["domain9.com", "domain8.com", "domain7.com"]
+
+
+# ---------------------------------------------------------------------------
+# _get_coreguard_path
+# ---------------------------------------------------------------------------
+
+
+class TestGetCoreguardPath:
+    def test_finds_alongside_executable(self, tmp_path):
+        fake_bin = tmp_path / "coreguard"
+        fake_bin.touch()
+        with patch("coreguard.menubar.sys.executable", str(tmp_path / "python")):
+            assert _get_coreguard_path() == str(fake_bin)
+
+    @patch("coreguard.menubar.shutil.which", return_value="/usr/local/bin/coreguard")
+    def test_falls_back_to_which(self, _mock_which, tmp_path):
+        with patch("coreguard.menubar.sys.executable", str(tmp_path / "python")):
+            assert _get_coreguard_path() == "/usr/local/bin/coreguard"
+
+    @patch("coreguard.menubar.shutil.which", return_value=None)
+    def test_returns_none_when_not_found(self, _mock_which, tmp_path):
+        with patch("coreguard.menubar.sys.executable", str(tmp_path / "python")):
+            assert _get_coreguard_path() is None
+
+
+# ---------------------------------------------------------------------------
+# Recent Blocked submenu (requires mock rumps)
+# ---------------------------------------------------------------------------
+
+
+class TestRecentBlockedSubmenu:
+    def setup_method(self):
+        self.mock_rumps = _make_mock_rumps()
+        self._orig = sys.modules.get("rumps")
+        sys.modules["rumps"] = self.mock_rumps
+
+    def teardown_method(self):
+        if self._orig is None:
+            sys.modules.pop("rumps", None)
+        else:
+            sys.modules["rumps"] = self._orig
+
+    @patch("coreguard.menubar._load_recent_blocked", return_value=["ads.example.com", "tracker.foo.com"])
+    @patch("coreguard.menubar._load_blocked_count", return_value=100)
+    @patch("coreguard.menubar._is_running", return_value=True)
+    def test_refresh_populates_submenu(self, _run, _count, _blocked):
+        from coreguard.menubar import _build_app
+        app = _build_app()
+        children = app.recent_blocked_item.values
+        assert len(children) == 2
+        assert children[0].title == "ads.example.com"
+        assert children[1].title == "tracker.foo.com"
+
+    @patch("coreguard.menubar._load_recent_blocked", return_value=[])
+    @patch("coreguard.menubar._load_blocked_count", return_value=0)
+    @patch("coreguard.menubar._is_running", return_value=False)
+    def test_refresh_empty_submenu(self, _run, _count, _blocked):
+        from coreguard.menubar import _build_app
+        app = _build_app()
+        children = app.recent_blocked_item.values
+        assert len(children) == 1
+        assert children[0].title == "No blocked queries yet"
+
+
+# ---------------------------------------------------------------------------
+# _unblock_clicked
+# ---------------------------------------------------------------------------
+
+
+class TestUnblockClicked:
+    def setup_method(self):
+        self.mock_rumps = _make_mock_rumps()
+        self._orig = sys.modules.get("rumps")
+        sys.modules["rumps"] = self.mock_rumps
+
+    def teardown_method(self):
+        if self._orig is None:
+            sys.modules.pop("rumps", None)
+        else:
+            sys.modules["rumps"] = self._orig
+
+    @patch("coreguard.menubar.subprocess.run")
+    @patch("coreguard.menubar._get_coreguard_path", return_value="/usr/local/bin/coreguard")
+    @patch("coreguard.menubar._load_recent_blocked", return_value=[])
+    @patch("coreguard.menubar._load_blocked_count", return_value=0)
+    @patch("coreguard.menubar._is_running", return_value=False)
+    def test_unblock_calls_osascript(self, _run, _count, _blocked, _cg, mock_subproc):
+        from coreguard.menubar import _build_app
+        app = _build_app()
+        sender = MagicMock()
+        sender.title = "ads.example.com"
+        app._unblock_clicked(sender)
+        mock_subproc.assert_called_once()
+        cmd = mock_subproc.call_args[0][0]
+        assert cmd[0] == "osascript"
+        assert "ads.example.com" in mock_subproc.call_args[0][0][-1]
+        assert "unblock" in mock_subproc.call_args[0][0][-1]
+        assert "administrator privileges" in mock_subproc.call_args[0][0][-1]
+
+    @patch("coreguard.menubar.subprocess.run")
+    @patch("coreguard.menubar._get_coreguard_path", return_value="/usr/local/bin/coreguard")
+    @patch("coreguard.menubar._load_recent_blocked", return_value=[])
+    @patch("coreguard.menubar._load_blocked_count", return_value=0)
+    @patch("coreguard.menubar._is_running", return_value=False)
+    def test_unblock_validates_domain(self, _run, _count, _blocked, _cg, mock_subproc):
+        from coreguard.menubar import _build_app
+        app = _build_app()
+        sender = MagicMock()
+        sender.title = "bad domain; rm -rf /"
+        app._unblock_clicked(sender)
+        mock_subproc.assert_not_called()
+
+    @patch("coreguard.menubar.subprocess.run", side_effect=subprocess.CalledProcessError(1, "osascript"))
+    @patch("coreguard.menubar._get_coreguard_path", return_value="/usr/local/bin/coreguard")
+    @patch("coreguard.menubar._load_recent_blocked", return_value=[])
+    @patch("coreguard.menubar._load_blocked_count", return_value=0)
+    @patch("coreguard.menubar._is_running", return_value=False)
+    def test_unblock_handles_cancel(self, _run, _count, _blocked, _cg, _subproc):
+        from coreguard.menubar import _build_app
+        app = _build_app()
+        sender = MagicMock()
+        sender.title = "ads.example.com"
+        # Should not raise
+        app._unblock_clicked(sender)

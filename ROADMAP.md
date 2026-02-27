@@ -39,9 +39,9 @@
 
 ## Phase 3 — Smart blocking & management UI
 
-**Breakage quick-unblock (menubar integration)**
-- [ ] "Last 5 blocked domains" submenu in the menubar agent
-- [ ] One-click temporary allowlist from the menu
+**Breakage quick-unblock (menubar integration)** *(done)*
+- [x] "Last 5 blocked domains" submenu in the menubar agent
+- [x] One-click temporary allowlist from the menu
 
 **Web dashboard with full management**
 - [ ] Evolve the current read-only dashboard into a control panel

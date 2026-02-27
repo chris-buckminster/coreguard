@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import os
 import pwd
+import re
+import shutil
 import subprocess
 import sys
 import webbrowser
 from pathlib import Path
 
-from coreguard.config import PID_FILE, STATS_FILE, load_config
+from coreguard.config import LOG_FILE, PID_FILE, STATS_FILE, load_config
 
 _LAUNCH_AGENT_LABEL = "com.coreguard.status"
 _LAUNCH_AGENT_DIR = Path.home() / "Library" / "LaunchAgents"
@@ -24,6 +26,10 @@ _ICON_RUNNING = "\u25cf"  # ●
 _ICON_STOPPED = "\u25cb"  # ○
 
 _POLL_INTERVAL = 5  # seconds
+
+_UNBLOCK_DURATION = "5m"
+_DOMAIN_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+_TAIL_BYTES = 8192  # read last 8 KB of log for recent blocked domains
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +76,45 @@ def _dashboard_port() -> int:
         return config.dashboard_port
     except Exception:
         return 8080
+
+
+def _load_recent_blocked(limit: int = 5) -> list[str]:
+    """Return the last *limit* unique blocked domains from the query log.
+
+    Reads only the tail of the log file for performance.
+    """
+    if not LOG_FILE.exists():
+        return []
+    try:
+        size = LOG_FILE.stat().st_size
+        with open(LOG_FILE, "rb") as f:
+            offset = max(0, size - _TAIL_BYTES)
+            f.seek(offset)
+            data = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+
+    pattern = re.compile(r"BLOCKED\s+\S+\s+(\S+)")
+    seen: set[str] = set()
+    result: list[str] = []
+    for line in reversed(data.splitlines()):
+        m = pattern.search(line)
+        if m:
+            domain = m.group(1)
+            if domain not in seen:
+                seen.add(domain)
+                result.append(domain)
+                if len(result) >= limit:
+                    break
+    return result
+
+
+def _get_coreguard_path() -> str | None:
+    """Locate the coreguard executable, or None if not found."""
+    current_bin = Path(sys.executable).parent / "coreguard"
+    if current_bin.exists():
+        return str(current_bin)
+    return shutil.which("coreguard")
 
 
 def _generate_launch_agent_plist() -> str:
@@ -215,10 +260,13 @@ def _build_app():  # noqa: C901
             super().__init__(_ICON_STOPPED, quit_button="Quit")
             self.status_item = rumps.MenuItem("Status: Stopped")
             self.blocked_item = rumps.MenuItem("Blocked: 0 queries")
+            self.recent_blocked_item = rumps.MenuItem("Recent Blocked")
             self.dashboard_item = rumps.MenuItem("Open Dashboard")
             self.menu = [
                 self.status_item,
                 self.blocked_item,
+                None,  # separator
+                self.recent_blocked_item,
                 None,  # separator
                 self.dashboard_item,
             ]
@@ -241,6 +289,52 @@ def _build_app():  # noqa: C901
                 "Status: Running" if running else "Status: Stopped"
             )
             self.blocked_item.title = _format_blocked_count(blocked)
+
+            # Rebuild "Recent Blocked" submenu.
+            try:
+                domains = _load_recent_blocked(5)
+            except Exception:
+                domains = []
+            self.recent_blocked_item.clear()
+            if domains:
+                for domain in domains:
+                    self.recent_blocked_item.add(
+                        rumps.MenuItem(domain, callback=self._unblock_clicked)
+                    )
+            else:
+                placeholder = rumps.MenuItem("No blocked queries yet")
+                placeholder.set_callback(None)
+                self.recent_blocked_item.add(placeholder)
+
+        def _unblock_clicked(self, sender) -> None:
+            """Temporarily unblock a domain via osascript with admin privileges."""
+            domain = sender.title
+            if not _DOMAIN_RE.match(domain):
+                return
+            cg = _get_coreguard_path()
+            if cg is None:
+                return
+            # Escape for AppleScript string embedding.
+            from coreguard.notify import _escape_applescript
+            escaped_cmd = _escape_applescript(
+                f"{cg} unblock {domain} --for {_UNBLOCK_DURATION}"
+            )
+            script = (
+                f'do shell script "{escaped_cmd}" '
+                f"with administrator privileges"
+            )
+            try:
+                subprocess.run(
+                    ["osascript", "-e", script],
+                    capture_output=True,
+                    check=True,
+                )
+                rumps.notification(
+                    "Coreguard", "",
+                    f"Unblocked {domain} for 5 minutes",
+                )
+            except (subprocess.CalledProcessError, OSError):
+                pass  # User cancelled password dialog or osascript failed
 
         @rumps.clicked("Open Dashboard")
         def open_dashboard(self, _sender) -> None:
