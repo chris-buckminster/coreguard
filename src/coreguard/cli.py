@@ -33,6 +33,7 @@ from coreguard.daemon import (
     setup_signal_handlers,
     write_pid_file,
 )
+from coreguard.menubar import ensure_menubar_running, remove_menubar
 from coreguard.dns_server import start_dns_server
 from coreguard.filtering import DomainFilter
 from coreguard.logging_config import QueryLogger
@@ -152,6 +153,9 @@ def start(foreground):
     if os.geteuid() != 0:
         click.echo("Error: coreguard requires root privileges. Run with: sudo coreguard start")
         sys.exit(1)
+
+    # Start the menubar status agent for the logged-in user.
+    ensure_menubar_running()
 
     # If launchd service exists but is unloaded (after stop), reload it
     if not foreground and LAUNCHD_PLIST_PATH.exists() and not _is_launchd_loaded():
@@ -677,6 +681,9 @@ def install():
         LAUNCHD_PLIST_PATH.unlink(missing_ok=True)
         sys.exit(1)
 
+    # Also install the menubar status agent for the logged-in user.
+    ensure_menubar_running()
+
     click.echo("Coreguard installed as system service.")
     click.echo(f"  Executable: {coreguard_bin}")
     click.echo(f"  Plist: {LAUNCHD_PLIST_PATH}")
@@ -706,6 +713,9 @@ def uninstall():
 
     # Restore DNS
     restore_dns()
+
+    # Also remove the menubar status agent.
+    remove_menubar()
 
     # Clean up
     LAUNCHD_PLIST_PATH.unlink(missing_ok=True)

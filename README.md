@@ -41,7 +41,8 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **Automatic updates** — filter lists refresh every 24 hours (configurable)
 - **Allowlist and blocklist** — per-domain overrides with a single command
 - **One-step unblock** — `unblock` command adds to allowlist and triggers immediate reload
-- **Auto-start on boot** — install as a macOS launchd service with a single command
+- **Menubar status agent** — at-a-glance `●`/`○` icon showing daemon health, blocked count, and quick dashboard access
+- **Auto-start on boot** — install as a macOS launchd service with a single command; menubar agent starts automatically at login
 - **Health monitoring** — macOS notifications for failures, plus a `doctor` command for diagnostics
 - **VPN-safe** — only modifies DNS on physical interfaces (Wi-Fi, Ethernet, USB), leaving VPN tunnels untouched
 - **Self-healing DNS** — automatically re-applies DNS settings after sleep/wake or network changes (checked every 60 seconds)
@@ -133,7 +134,17 @@ sudo brew services start coreguard
 sudo coreguard uninstall
 ```
 
-Once installed, coreguard starts automatically when your Mac boots and will restart itself if it crashes.
+Once installed, coreguard starts automatically when your Mac boots and will restart itself if it crashes. A menubar status agent is also installed and starts at login, showing daemon health at a glance.
+
+### Menubar Status Agent
+
+When you start or install coreguard, a lightweight menubar agent launches automatically. It shows:
+
+- **`●`** when the daemon is running, **`○`** when stopped
+- Blocked query count
+- Quick "Open Dashboard" link
+
+The agent polls every 5 seconds and runs as a separate user-level process. It auto-starts at login via a LaunchAgent — no extra setup required.
 
 ### Managing Domains
 

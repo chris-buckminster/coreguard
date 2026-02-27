@@ -19,12 +19,12 @@
 
 ## Phase 2 — Differentiate from competitors
 
-**Menubar status agent**
-- [ ] Lightweight macOS menubar icon using `rumps` (~100 lines MVP)
-- [ ] Green/red shield showing daemon health
-- [ ] Menu: status, blocked count, "Open Dashboard", restart
-- [ ] Separate process from daemon, auto-started via LaunchAgent plist
-- [ ] Ships as `coreguard-status` in the Homebrew formula
+**Menubar status agent** *(done)*
+- [x] Lightweight macOS menubar icon using `rumps` (~100 lines MVP)
+- [x] Unicode dot icon showing daemon health (● running / ○ stopped)
+- [x] Menu: status, blocked count, "Open Dashboard", quit
+- [x] Separate process from daemon, auto-started via LaunchAgent plist
+- [x] Ships as `coreguard-status` in the Homebrew formula
 
 **Temporary allowlisting with auto-revert**
 - [ ] `coreguard unblock example.com --for 5m`
