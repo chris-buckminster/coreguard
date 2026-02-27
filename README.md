@@ -49,6 +49,7 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **Self-healing DNS** — automatically re-applies DNS settings after sleep/wake or network changes (checked every 60 seconds)
 - **Live query logging** — see exactly what's being blocked in real time
 - **Web dashboard** — real-time stats, top domains, and query log at `http://127.0.0.1:8080`
+- **JSON output** — `--json` flag on every command for scripting and automation (`coreguard status --json | jq`)
 - **Statistics** — track total queries, block rate, cache hit rate, and top blocked domains
 - **Graceful DNS restore** — original DNS settings are backed up and restored on stop
 - **Foreground mode** — run interactively for debugging and testing
@@ -230,6 +231,33 @@ The dashboard auto-refreshes every 5 seconds. It runs on localhost only and requ
 enabled = true
 port = 8080
 ```
+
+### JSON Output
+
+Every command supports a `--json` flag that emits a single JSON object instead of human-readable text. This enables scripting, automation, and integration with tools like `jq`:
+
+```bash
+# Check status programmatically
+coreguard status --json | jq '.stats.blocked_queries'
+
+# List filter list names
+coreguard lists --json | jq '.filter_lists[].name'
+
+# Find failing health checks
+coreguard doctor --json | jq '.checks[] | select(.status != "ok")'
+
+# Read recent log entries as JSON
+coreguard log --json -n 100 | jq '.lines[]'
+
+# All action commands work too
+sudo coreguard allow example.com --json
+sudo coreguard block evil.com --json
+sudo coreguard unblock site.com --for 5m --json
+```
+
+Every JSON response includes a `"status"` field (`"ok"` or `"error"`) plus command-specific fields. Exit codes are set appropriately for machine consumption.
+
+> **Note:** `--json` is incompatible with `log --follow` since follow mode is inherently streaming.
 
 ### Logs and Statistics
 
