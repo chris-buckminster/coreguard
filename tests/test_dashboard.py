@@ -61,6 +61,7 @@ class TestDashboardEndpoints:
 
     def teardown_method(self):
         self.server.shutdown()
+        self.server.server_close()
 
     def test_html_endpoint(self):
         status, headers, body = _get(self.port, "/")
@@ -135,6 +136,7 @@ class TestStartDashboard:
         server = start_dashboard(config, stats)
         assert server is not None
         server.shutdown()
+        server.server_close()
 
     def test_returns_none_on_port_conflict(self):
         """If the port is already in use, returns None instead of crashing."""
@@ -155,6 +157,7 @@ class TestStartDashboard:
         # verify it doesn't raise
         if result is not None:
             result.shutdown()
+            result.server_close()
         blocker.server_close()
 
 
