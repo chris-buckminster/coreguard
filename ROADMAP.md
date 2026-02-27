@@ -2,14 +2,14 @@
 
 ## Phase 1 — Strengthen the foundation
 
-**Test coverage**
-- [ ] Add tests for `daemon.py` (fork/daemonize, PID management, signal handling, main loop)
-- [ ] Add tests for `notify.py` and `logging_config.py`
-- [ ] Add integration tests for the full start→block→stop flow
+**Test coverage** *(done)*
+- [x] Add tests for `daemon.py` (fork/daemonize, PID management, signal handling, main loop)
+- [x] Add tests for `notify.py` and `logging_config.py`
+- [x] Add integration tests for the full start→block→stop flow
 
-**Release automation**
-- [ ] GitHub Actions workflow triggered on `v*` tag push
-- [ ] Creates a GitHub release, computes tarball SHA256, opens a PR against the Homebrew tap to update the formula
+**Release automation** *(done)*
+- [x] GitHub Actions workflow triggered on `v*` tag push
+- [x] Creates a GitHub release, computes tarball SHA256, opens a PR against the Homebrew tap to update the formula
 
 **CI** *(done)*
 - [x] GitHub Actions CI workflow (Python 3.10–3.12, macOS)

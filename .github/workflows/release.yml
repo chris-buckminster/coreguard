@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" --generate-notes
+
+      - name: Compute tarball SHA256
+        id: sha
+        run: |
+          curl -sL "https://github.com/${{ github.repository }}/archive/refs/tags/${{ github.ref_name }}.tar.gz" -o source.tar.gz
+          SHA=$(shasum -a 256 source.tar.gz | awk '{print $1}')
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Tarball SHA256: $SHA"
+
+      - name: Update Homebrew tap formula
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          SHA="${{ steps.sha.outputs.sha256 }}"
+          BRANCH="update-${VERSION}"
+
+          git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/chris-buckminster/homebrew-coreguard.git" tap
+          cd tap
+
+          # Update URL and SHA256 in the formula
+          sed -i '' "s|archive/refs/tags/v[^\"]*\.tar\.gz|archive/refs/tags/${VERSION}.tar.gz|" Formula/coreguard.rb
+          sed -i '' "s/sha256 \"[a-f0-9]*\"/sha256 \"${SHA}\"/" Formula/coreguard.rb
+
+          git checkout -b "$BRANCH"
+          git add Formula/coreguard.rb
+          git commit -m "Update coreguard to ${VERSION}"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --repo chris-buckminster/homebrew-coreguard \
+            --base main \
+            --head "$BRANCH" \
+            --title "Update coreguard to ${VERSION}" \
+            --body "Automated formula update from [release ${VERSION}](https://github.com/${{ github.repository }}/releases/tag/${VERSION})."
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
