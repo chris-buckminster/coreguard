@@ -1,5 +1,7 @@
 # Coreguard
 
+[![CI](https://github.com/chris-buckminster/coreguard/actions/workflows/ci.yml/badge.svg)](https://github.com/chris-buckminster/coreguard/actions/workflows/ci.yml)
+
 A lightweight, privacy-focused DNS-based ad and tracker blocker for macOS. Coreguard runs a local DNS server that intercepts queries, blocks known advertising and tracking domains, and forwards legitimate requests through encrypted DNS-over-HTTPS — all from the command line.
 
 ## How It Works
