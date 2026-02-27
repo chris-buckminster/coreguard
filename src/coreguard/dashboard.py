@@ -1,13 +1,18 @@
+import csv
 import hmac
+import io
 import json
 import logging
 import os
+import queue
 import re
 import signal
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -23,6 +28,31 @@ from coreguard.config import (
 from coreguard.stats import Stats
 
 logger = logging.getLogger("coreguard.dashboard")
+
+# --- SSE event bus ---
+_MAX_SSE_CLIENTS = 5
+_sse_clients: list[queue.Queue] = []
+_sse_lock = threading.Lock()
+
+
+def broadcast_query(domain: str, qtype: str, blocked: bool, client_ip: str | None = None) -> None:
+    """Broadcast a query event to all connected SSE clients."""
+    event = json.dumps({
+        "domain": domain,
+        "type": qtype,
+        "status": "BLOCKED" if blocked else "ALLOWED",
+        "client": client_ip or "",
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    with _sse_lock:
+        dead = []
+        for q in _sse_clients:
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _sse_clients.remove(q)
 
 _DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?$")
 _DURATION_UNITS = {"s": 1, "m": 60, "h": 3600}
@@ -56,6 +86,77 @@ def _parse_duration(s: str) -> int | None:
     return int(match.group(1)) * _DURATION_UNITS[match.group(2)]
 
 
+_history_cache: dict = {"data": None, "timestamp": 0}
+
+_QUERY_LOG_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?(BLOCKED|ALLOWED)\s+\S+\s+\S+"
+)
+
+
+def _read_query_history() -> list[dict]:
+    """Parse log file and return 24h of query counts in 10-minute buckets.
+
+    Returns a list of 144 dicts with keys: time, allowed, blocked.
+    Uses a 60-second cache to avoid re-parsing on every request.
+    """
+    now = time.time()
+    if _history_cache["data"] is not None and now - _history_cache["timestamp"] < 60:
+        return _history_cache["data"]
+
+    utcnow = datetime.now(timezone.utc).astimezone()  # local time
+    # Round down to the current 10-minute boundary
+    base_minute = (utcnow.minute // 10) * 10
+    end = utcnow.replace(minute=base_minute, second=0, microsecond=0) + timedelta(
+        minutes=10
+    )
+    start = end - timedelta(hours=24)
+
+    # Build 144 empty buckets
+    buckets: list[dict] = []
+    bucket_map: dict[str, dict] = {}
+    for i in range(144):
+        t = start + timedelta(minutes=10 * i)
+        key = t.strftime("%Y-%m-%d %H:%M")
+        bucket = {"time": t.strftime("%Y-%m-%dT%H:%M:%S"), "allowed": 0, "blocked": 0}
+        buckets.append(bucket)
+        bucket_map[key] = bucket
+
+    if not LOG_FILE.exists():
+        _history_cache["data"] = buckets
+        _history_cache["timestamp"] = now
+        return buckets
+
+    start_str = start.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(LOG_FILE, "r") as f:
+            for line in f:
+                # Quick prefix check before regex
+                if len(line) < 19:
+                    continue
+                ts_str = line[:19]
+                if ts_str < start_str:
+                    continue
+                m = _QUERY_LOG_RE.match(line)
+                if not m:
+                    continue
+                # Bucket key: YYYY-MM-DD HH:M0 (floor to 10-min)
+                minute_part = ts_str[14:16]
+                bucket_key = ts_str[:14] + str(int(minute_part) // 10 * 10).zfill(2)
+                bucket = bucket_map.get(bucket_key)
+                if bucket is None:
+                    continue
+                if m.group(2) == "BLOCKED":
+                    bucket["blocked"] += 1
+                else:
+                    bucket["allowed"] += 1
+    except OSError:
+        pass
+
+    _history_cache["data"] = buckets
+    _history_cache["timestamp"] = now
+    return buckets
+
+
 def _send_self_sighup() -> None:
     """Send SIGHUP to the current process to trigger filter reload."""
     try:
@@ -75,19 +176,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        params = parse_qs(parsed.query)
 
         if path == "/":
             self._serve_html()
         elif path == "/api/stats":
             self._serve_stats()
         elif path == "/api/queries":
-            params = parse_qs(parsed.query)
-            limit = int(params.get("limit", ["100"])[0])
-            self._serve_queries(limit)
+            self._serve_queries(params)
+        elif path == "/api/queries/export":
+            self._serve_export(params)
         elif path == "/api/config":
             self._serve_config()
         elif path == "/api/domains":
             self._serve_domains()
+        elif path == "/api/history":
+            self._serve_history()
+        elif path == "/api/clients":
+            self._serve_clients()
+        elif path == "/api/stream":
+            self._serve_sse()
         else:
             self.send_error(404)
 
@@ -178,12 +286,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
         data = self.stats.to_dict() if self.stats else {}
         if self.cache:
             data["cache_size"] = self.cache.size
+        # Derive sparkline data from history cache — last 12 buckets (2 hours)
+        history = _read_query_history()
+        if history:
+            last_12 = history[-12:]
+            data["sparkline"] = {
+                "total": [b["allowed"] + b["blocked"] for b in last_12],
+                "blocked": [b["blocked"] for b in last_12],
+                "allowed": [b["allowed"] for b in last_12],
+            }
         self._json_response(data)
 
-    def _serve_queries(self, limit: int = 100) -> None:
-        limit = min(max(limit, 1), 500)
-        queries = _read_recent_queries(limit)
-        self._json_response(queries)
+    def _serve_queries(self, params: dict) -> None:
+        limit = min(max(int(params.get("limit", ["100"])[0]), 1), 500)
+        offset = max(int(params.get("offset", ["0"])[0]), 0)
+        start = params.get("start", [None])[0]
+        end = params.get("end", [None])[0]
+        domain = params.get("domain", [None])[0]
+        client = params.get("client", [None])[0]
+        status = params.get("status", [None])[0]
+        queries, total = _read_recent_queries(
+            limit, offset=offset, start=start, end=end,
+            domain=domain, client=client, status=status,
+        )
+        self._json_response({
+            "queries": queries,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + limit < total,
+        })
 
     def _serve_config(self) -> None:
         cfg = self.config
@@ -245,6 +377,72 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "blocklist": blocklist,
             "temp_allowlist": temp_allowlist,
         })
+
+    def _serve_history(self) -> None:
+        buckets = _read_query_history()
+        self._json_response({"buckets": buckets, "bucket_minutes": 10})
+
+    def _serve_clients(self) -> None:
+        data = self.stats.to_dict() if self.stats else {}
+        self._json_response({"clients": data.get("top_clients", {})})
+
+    def _serve_export(self, params: dict) -> None:
+        fmt = params.get("format", ["json"])[0]
+        queries, _ = _read_recent_queries(10000)
+        if fmt == "csv":
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["time", "status", "type", "domain", "client"])
+            for q in queries:
+                writer.writerow([q["time"], q["status"], q["type"], q["domain"], q.get("client", "")])
+            body = output.getvalue().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv")
+            self.send_header("Content-Disposition", "attachment; filename=coreguard-queries.csv")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            body = json.dumps(queries, indent=2).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Disposition", "attachment; filename=coreguard-queries.json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    def _serve_sse(self) -> None:
+        """Server-Sent Events endpoint for real-time query streaming."""
+        with _sse_lock:
+            if len(_sse_clients) >= _MAX_SSE_CLIENTS:
+                self._json_response({"error": "Too many SSE clients"}, status=429)
+                return
+            q = queue.Queue(maxsize=100)
+            _sse_clients.append(q)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        try:
+            while True:
+                try:
+                    event = q.get(timeout=30)
+                    self.wfile.write(f"data: {event}\n\n".encode())
+                    self.wfile.flush()
+                except queue.Empty:
+                    # Send keepalive comment
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            with _sse_lock:
+                if q in _sse_clients:
+                    _sse_clients.remove(q)
 
     def _serve_html(self) -> None:
         body = DASHBOARD_HTML.encode()
@@ -486,34 +684,65 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _read_recent_queries(limit: int) -> list[dict]:
-    """Read and parse the last N query log entries."""
+_QUERY_PATTERN = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?(BLOCKED|ALLOWED)\s+(\S+)\s+(\S+)(?:\s+(\S+))?"
+)
+
+
+def _read_recent_queries(
+    limit: int,
+    offset: int = 0,
+    start: str | None = None,
+    end: str | None = None,
+    domain: str | None = None,
+    client: str | None = None,
+    status: str | None = None,
+) -> tuple[list[dict], int]:
+    """Read and parse query log entries with filtering and pagination.
+
+    Returns (entries, total_matching_count).
+    """
     if not LOG_FILE.exists():
-        return []
+        return [], 0
     try:
         with open(LOG_FILE, "r") as f:
             lines = f.readlines()
     except OSError:
-        return []
+        return [], 0
 
-    # Query log lines look like:
-    # 2026-02-26 14:30:01 [coreguard.queries] INFO BLOCKED A ads.example.com
-    pattern = re.compile(
-        r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?(BLOCKED|ALLOWED)\s+(\S+)\s+(\S+)"
-    )
     results = []
     for line in reversed(lines):
-        m = pattern.match(line.strip())
-        if m:
-            results.append({
-                "time": m.group(1),
-                "status": m.group(2),
-                "type": m.group(3),
-                "domain": m.group(4),
-            })
-            if len(results) >= limit:
-                break
-    return results
+        m = _QUERY_PATTERN.match(line.strip())
+        if not m:
+            continue
+        ts = m.group(1)
+        if start and ts < start:
+            continue
+        if end and ts > end:
+            continue
+        entry_status = m.group(2)
+        if status and status != "all" and entry_status != status:
+            continue
+        entry_domain = m.group(4)
+        if domain and domain.lower() not in entry_domain.lower():
+            continue
+        entry_client = m.group(5) or ""
+        if client and client != entry_client:
+            continue
+        results.append({
+            "time": ts,
+            "status": entry_status,
+            "type": m.group(3),
+            "domain": entry_domain,
+            "client": entry_client,
+        })
+    total = len(results)
+    return results[offset:offset + limit], total
+
+
+class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTPServer that handles each request in a new thread (needed for SSE)."""
+    daemon_threads = True
 
 
 def start_dashboard(config: Config, stats: Stats, cache=None) -> HTTPServer | None:
@@ -536,7 +765,7 @@ def start_dashboard(config: Config, stats: Stats, cache=None) -> HTTPServer | No
     DashboardHandler.token = config.dashboard_token
 
     try:
-        server = HTTPServer(("127.0.0.1", config.dashboard_port), DashboardHandler)
+        server = _ThreadedHTTPServer(("127.0.0.1", config.dashboard_port), DashboardHandler)
     except OSError as e:
         logger.warning("Could not start dashboard on port %d: %s", config.dashboard_port, e)
         return None
@@ -572,7 +801,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .tabs { display: flex; gap: 0; padding: 16px 24px 0; border-bottom: 1px solid #30363d; }
   .tab {
     padding: 8px 16px; cursor: pointer; color: #8b949e; font-size: 14px;
-    border-bottom: 2px solid transparent; transition: color 0.2s;
+    border-bottom: 2px solid transparent; transition: color 0.2s; position: relative;
   }
   .tab:hover { color: #c9d1d9; }
   .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
@@ -587,12 +816,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .card {
     background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px;
+    position: relative; overflow: hidden;
   }
   .card .label { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
   .card .value { font-size: 26px; font-weight: 600; color: #f0f6fc; margin-top: 4px; }
   .card .value.green { color: #3fb950; }
   .card .value.red { color: #f85149; }
   .card .value.blue { color: #58a6ff; }
+  .card canvas.sparkline {
+    position: absolute; bottom: 4px; right: 8px; width: 60px; height: 20px; opacity: 0.6;
+  }
 
   /* --- Tables --- */
   .tables { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
@@ -622,6 +855,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     max-width: 400px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px;
   }
+  .domain.clickable { cursor: pointer; }
+  .domain.clickable:hover { color: #58a6ff; text-decoration: underline; }
   .scroll-table {
     max-height: 500px; overflow-y: auto; background: #161b22;
     border: 1px solid #30363d; border-radius: 8px;
@@ -733,7 +968,65 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   .actions { display: flex; gap: 8px; margin-top: 16px; }
   .refresh-note { color: #484f58; font-size: 11px; text-align: right; margin-bottom: 8px; }
-  .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+  .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+
+  /* --- Filter chip --- */
+  .filter-chip {
+    display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px;
+    background: #1f2937; border: 1px solid #58a6ff; border-radius: 12px;
+    font-size: 11px; color: #58a6ff;
+  }
+  .filter-chip .dismiss { cursor: pointer; font-weight: bold; margin-left: 4px; }
+  .filter-chip .dismiss:hover { color: #f85149; }
+
+  /* --- History chart --- */
+  .history-chart {
+    position: relative; background: #161b22; border: 1px solid #30363d;
+    border-radius: 8px; padding: 16px; margin-bottom: 24px;
+  }
+  .history-chart h2 {
+    font-size: 14px; color: #8b949e; margin-bottom: 12px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .history-chart canvas { width: 100%; height: 200px; display: block; cursor: crosshair; }
+  .chart-tooltip {
+    position: fixed; display: none; background: #1c2128; border: 1px solid #30363d;
+    border-radius: 6px; padding: 8px 12px; font-size: 12px; color: #c9d1d9;
+    pointer-events: none; z-index: 10; white-space: nowrap;
+  }
+  .chart-tooltip .tt-time { color: #8b949e; margin-bottom: 4px; }
+  .chart-tooltip .tt-allowed { color: #3fb950; }
+  .chart-tooltip .tt-blocked { color: #f85149; }
+
+  /* --- Donut chart --- */
+  .donut-chart {
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 8px; padding: 16px; margin-bottom: 24px;
+  }
+  .donut-chart h2 {
+    font-size: 14px; color: #8b949e; margin-bottom: 12px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .donut-container { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+  .donut-container canvas { flex-shrink: 0; }
+  .donut-legend { display: flex; flex-direction: column; gap: 6px; }
+  .donut-legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .donut-legend-color { width: 12px; height: 12px; border-radius: 3px; }
+
+  /* --- Pagination --- */
+  .pagination {
+    display: flex; align-items: center; justify-content: center;
+    gap: 12px; margin-top: 12px; font-size: 13px;
+  }
+  .pagination .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* --- SSE Live badge --- */
+  .live-badge {
+    display: inline-block; background: #f85149; color: #fff; font-size: 9px;
+    padding: 1px 5px; border-radius: 4px; font-weight: 700; vertical-align: top;
+    margin-left: 4px; animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 </style>
 </head>
 <body>
@@ -758,7 +1051,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <div class="tabs">
   <div class="tab active" data-tab="overview">Overview</div>
-  <div class="tab" data-tab="queries">Queries</div>
+  <div class="tab" data-tab="queries">Queries <span class="live-badge" id="live-badge" style="display:none">LIVE</span></div>
   <div class="tab" data-tab="domains">Domains</div>
   <div class="tab" data-tab="lists">Lists</div>
   <div class="tab" data-tab="settings">Settings</div>
@@ -767,12 +1060,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <!-- Tab 1: Overview -->
 <div class="tab-content active" id="tab-overview">
   <div class="cards">
-    <div class="card"><div class="label">Total Queries</div><div class="value" id="total">-</div></div>
-    <div class="card"><div class="label">Blocked</div><div class="value red" id="blocked">-</div></div>
+    <div class="card"><div class="label">Total Queries</div><div class="value" id="total">-</div><canvas class="sparkline" id="spark-total"></canvas></div>
+    <div class="card"><div class="label">Blocked</div><div class="value red" id="blocked">-</div><canvas class="sparkline" id="spark-blocked"></canvas></div>
     <div class="card"><div class="label">Block Rate</div><div class="value red" id="block-rate">-</div></div>
     <div class="card"><div class="label">Cache Hit Rate</div><div class="value green" id="cache-rate">-</div></div>
     <div class="card"><div class="label">Cache Size</div><div class="value blue" id="cache-size">-</div></div>
     <div class="card"><div class="label">CNAME Blocks</div><div class="value" id="cname">-</div></div>
+  </div>
+  <div class="history-chart">
+    <h2>Queries over last 24 hours</h2>
+    <canvas id="history-canvas" height="200"></canvas>
+    <div class="chart-tooltip" id="chart-tooltip">
+      <div class="tt-time" id="tt-time"></div>
+      <div class="tt-allowed" id="tt-allowed"></div>
+      <div class="tt-blocked" id="tt-blocked"></div>
+    </div>
+  </div>
+  <div class="donut-chart">
+    <h2>Query Type Breakdown</h2>
+    <div class="donut-container">
+      <canvas id="donut-canvas" width="150" height="150"></canvas>
+      <div class="donut-legend" id="donut-legend"></div>
+    </div>
   </div>
   <div class="tables">
     <div class="section">
@@ -783,6 +1092,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <h2>Top Queried Domains</h2>
       <table><thead><tr><th>Domain</th><th>Count</th></tr></thead><tbody id="top-queried"></tbody></table>
     </div>
+  </div>
+  <div class="section">
+    <h2>Top Clients</h2>
+    <table><thead><tr><th>Client IP</th><th>Queries</th></tr></thead><tbody id="top-clients"></tbody></table>
   </div>
   <div class="refresh-note">Auto-refreshes every 5 seconds</div>
 </div>
@@ -796,9 +1109,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <option value="BLOCKED">Blocked</option>
       <option value="ALLOWED">Allowed</option>
     </select>
+    <button class="btn btn-sm" onclick="exportQueries('csv')">Export CSV</button>
+    <button class="btn btn-sm" onclick="exportQueries('json')">Export JSON</button>
+    <span id="time-filter-chip"></span>
   </div>
   <div class="scroll-table">
-    <table><thead><tr><th>Time</th><th>Status</th><th>Type</th><th>Domain</th></tr></thead><tbody id="queries"></tbody></table>
+    <table><thead><tr><th>Time</th><th>Status</th><th>Type</th><th>Domain</th><th>Client</th></tr></thead><tbody id="queries"></tbody></table>
+  </div>
+  <div class="pagination">
+    <button class="btn btn-sm" id="prev-page" onclick="prevPage()">Previous</button>
+    <span id="page-info">Page 1</span>
+    <button class="btn btn-sm" id="next-page" onclick="nextPage()">Next</button>
   </div>
   <div class="refresh-note">Auto-refreshes every 5 seconds</div>
 </div>
@@ -880,6 +1201,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 // --- State ---
 let token = localStorage.getItem('cg_token') || '';
 let queriesData = [];
+let queryOffset = 0;
+let queryLimit = 100;
+let queryTotal = 0;
+let queryHasMore = false;
+let timeFilterStart = null;
+let timeFilterEnd = null;
+let prevStats = {};
+let sseConnected = false;
+let pollInterval = 5000;
 
 // --- Helpers ---
 function esc(s) {
@@ -917,6 +1247,117 @@ async function api(method, path, body) {
   return data;
 }
 
+// --- Live counter animation ---
+function animateValue(el, from, to, duration, suffix) {
+  if (from === to) return;
+  const start = performance.now();
+  suffix = suffix || '';
+  function step(now) {
+    const t = Math.min((now - start) / duration, 1);
+    const ease = 1 - Math.pow(1 - t, 3); // ease-out cubic
+    const val = Math.round(from + (to - from) * ease);
+    el.textContent = val.toLocaleString() + suffix;
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+// --- Dynamic favicon ---
+function updateFavicon(blockedPercent) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 32; canvas.height = 32;
+  const ctx = canvas.getContext('2d');
+  ctx.beginPath();
+  ctx.arc(16, 16, 14, 0, Math.PI * 2);
+  ctx.fillStyle = blockedPercent < 50 ? '#3fb950' : '#f85149';
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(Math.round(blockedPercent) + '', 16, 17);
+  let link = document.querySelector('link[rel="icon"]');
+  if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+  link.href = canvas.toDataURL();
+}
+
+// --- Sparklines ---
+function drawSparkline(canvas, data, color) {
+  if (!canvas || !data || !data.length) return;
+  const w = 60, h = 20;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  const max = Math.max(...data, 1);
+  const step = w / (data.length - 1 || 1);
+  ctx.beginPath();
+  ctx.moveTo(0, h - (data[0] / max) * h);
+  for (let i = 1; i < data.length; i++) {
+    ctx.lineTo(i * step, h - (data[i] / max) * h);
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // Fill area
+  ctx.lineTo((data.length - 1) * step, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  ctx.fillStyle = color + '22';
+  ctx.fill();
+}
+
+// --- Donut chart ---
+function drawDonutChart(queryTypes) {
+  const canvas = document.getElementById('donut-canvas');
+  const legend = document.getElementById('donut-legend');
+  if (!canvas || !legend) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = 150 * dpr;
+  canvas.height = 150 * dpr;
+  canvas.style.width = '150px';
+  canvas.style.height = '150px';
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, 150, 150);
+
+  const colors = { A: '#3fb950', AAAA: '#58a6ff', CNAME: '#d2a8ff', MX: '#f0883e', TXT: '#ffa657' };
+  const defaultColor = '#8b949e';
+  const entries = Object.entries(queryTypes || {});
+  const total = entries.reduce((s, [, v]) => s + v, 0);
+  if (total === 0) {
+    ctx.beginPath();
+    ctx.arc(75, 75, 55, 0, Math.PI * 2);
+    ctx.strokeStyle = '#30363d';
+    ctx.lineWidth = 20;
+    ctx.stroke();
+    legend.innerHTML = '<div style="color:#484f58;font-size:12px">No data</div>';
+    return;
+  }
+
+  // Sort by count descending
+  entries.sort((a, b) => b[1] - a[1]);
+  let angle = -Math.PI / 2;
+  let legendHtml = '';
+  for (const [type, count] of entries) {
+    const slice = (count / total) * Math.PI * 2;
+    const color = colors[type] || defaultColor;
+    ctx.beginPath();
+    ctx.arc(75, 75, 55, angle, angle + slice);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 20;
+    ctx.stroke();
+    angle += slice;
+    const pct = ((count / total) * 100).toFixed(1);
+    legendHtml += '<div class="donut-legend-item"><span class="donut-legend-color" style="background:'+color+'"></span><span>'+esc(type)+': '+fmt(count)+' ('+pct+'%)</span></div>';
+  }
+  legend.innerHTML = legendHtml;
+}
+
 // --- Login ---
 function showLogin() { document.getElementById('login-overlay').classList.remove('hidden'); }
 function hideLogin() { document.getElementById('login-overlay').classList.add('hidden'); }
@@ -947,55 +1388,163 @@ document.getElementById('login-token').addEventListener('keydown', e => {
 });
 
 // --- Tabs ---
+function switchTab(tabName) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  const tab = document.querySelector('.tab[data-tab="'+tabName+'"]');
+  if (tab) tab.classList.add('active');
+  document.getElementById('tab-' + tabName).classList.add('active');
+}
 document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
-  });
+  tab.addEventListener('click', () => switchTab(tab.dataset.tab));
 });
+
+// --- Per-domain drill-down ---
+function drillDomain(domain) {
+  document.getElementById('query-search').value = domain;
+  switchTab('queries');
+  queryOffset = 0;
+  fetchQueries();
+}
+
+// --- Click-to-filter from chart ---
+function filterByTimeRange(startTime, endTime) {
+  timeFilterStart = startTime;
+  timeFilterEnd = endTime;
+  queryOffset = 0;
+  switchTab('queries');
+  updateTimeFilterChip();
+  fetchQueries();
+}
+
+function clearTimeFilter() {
+  timeFilterStart = null;
+  timeFilterEnd = null;
+  document.getElementById('time-filter-chip').innerHTML = '';
+  queryOffset = 0;
+  fetchQueries();
+}
+
+function updateTimeFilterChip() {
+  const el = document.getElementById('time-filter-chip');
+  if (timeFilterStart && timeFilterEnd) {
+    el.innerHTML = '<span class="filter-chip">'+esc(timeFilterStart)+' to '+esc(timeFilterEnd)+' <span class="dismiss" onclick="clearTimeFilter()">x</span></span>';
+  } else {
+    el.innerHTML = '';
+  }
+}
 
 // --- Overview ---
 async function refreshOverview() {
   try {
-    const [stats, queries] = await Promise.all([
-      fetch('/api/stats').then(r => r.json()),
-      fetch('/api/queries?limit=200').then(r => r.json())
-    ]);
-    queriesData = queries;
+    const stats = await fetch('/api/stats').then(r => r.json());
 
-    document.getElementById('total').textContent = fmt(stats.total_queries);
-    document.getElementById('blocked').textContent = fmt(stats.blocked_queries);
+    // Animate stat values
+    const fields = [
+      {id: 'total', key: 'total_queries'},
+      {id: 'blocked', key: 'blocked_queries'},
+      {id: 'cache-size', key: 'cache_size'},
+      {id: 'cname', key: 'cname_blocks'},
+    ];
+    for (const f of fields) {
+      const el = document.getElementById(f.id);
+      const oldVal = prevStats[f.key] || 0;
+      const newVal = stats[f.key] || 0;
+      if (oldVal !== newVal) animateValue(el, oldVal, newVal, 500);
+      else el.textContent = fmt(newVal);
+    }
+    // Percentage fields (no animation, just update)
     document.getElementById('block-rate').textContent = (stats.blocked_percent || 0) + '%';
     document.getElementById('cache-rate').textContent = (stats.cache_hit_rate || 0) + '%';
-    document.getElementById('cache-size').textContent = fmt(stats.cache_size || 0);
-    document.getElementById('cname').textContent = fmt(stats.cname_blocks);
+    prevStats = stats;
 
+    // Favicon
+    updateFavicon(stats.blocked_percent || 0);
+
+    // Sparklines
+    if (stats.sparkline) {
+      drawSparkline(document.getElementById('spark-total'), stats.sparkline.total, '#f0f6fc');
+      drawSparkline(document.getElementById('spark-blocked'), stats.sparkline.blocked, '#f85149');
+    }
+
+    // Donut chart
+    drawDonutChart(stats.query_types);
+
+    // Top blocked/queried with clickable domains
     document.getElementById('top-blocked').innerHTML = Object.entries(stats.top_blocked || {})
-      .map(([d,c]) => '<tr><td class="domain">'+esc(d)+'</td><td>'+fmt(c)+'</td></tr>').join('');
+      .map(([d,c]) => '<tr><td class="domain clickable" onclick="drillDomain(&#39;'+esc(d)+'&#39;)">'+esc(d)+'</td><td>'+fmt(c)+'</td></tr>').join('');
     document.getElementById('top-queried').innerHTML = Object.entries(stats.top_queried || {})
-      .map(([d,c]) => '<tr><td class="domain">'+esc(d)+'</td><td>'+fmt(c)+'</td></tr>').join('');
+      .map(([d,c]) => '<tr><td class="domain clickable" onclick="drillDomain(&#39;'+esc(d)+'&#39;)">'+esc(d)+'</td><td>'+fmt(c)+'</td></tr>').join('');
 
-    renderQueries();
+    // Top clients
+    const clients = stats.top_clients || {};
+    document.getElementById('top-clients').innerHTML = Object.entries(clients)
+      .map(([ip,c]) => '<tr><td class="domain clickable" onclick="filterByClient(&#39;'+esc(ip)+'&#39;)">'+esc(ip)+'</td><td>'+fmt(c)+'</td></tr>').join('') || '<tr><td colspan="2" class="empty-state">No client data</td></tr>';
+
   } catch(e) { console.error('Refresh failed:', e); }
 }
 
-// --- Queries ---
+function filterByClient(ip) {
+  document.getElementById('query-search').value = '';
+  switchTab('queries');
+  queryOffset = 0;
+  // Use the client filter param
+  fetchQueries({client: ip});
+}
+
+// --- Queries (paginated) ---
+async function fetchQueries(extra) {
+  try {
+    const search = document.getElementById('query-search').value.trim();
+    const statusFilter = document.getElementById('query-status-filter').value;
+    let url = '/api/queries?limit='+queryLimit+'&offset='+queryOffset;
+    if (search) url += '&domain=' + encodeURIComponent(search);
+    if (statusFilter && statusFilter !== 'all') url += '&status=' + encodeURIComponent(statusFilter);
+    if (timeFilterStart) url += '&start=' + encodeURIComponent(timeFilterStart);
+    if (timeFilterEnd) url += '&end=' + encodeURIComponent(timeFilterEnd);
+    if (extra && extra.client) url += '&client=' + encodeURIComponent(extra.client);
+    const data = await fetch(url).then(r => r.json());
+    queriesData = data.queries || [];
+    queryTotal = data.total || 0;
+    queryHasMore = data.has_more || false;
+    renderQueries();
+    updatePagination();
+  } catch(e) { console.error('Queries fetch failed:', e); }
+}
+
 function renderQueries() {
-  const search = document.getElementById('query-search').value.toLowerCase();
-  const statusFilter = document.getElementById('query-status-filter').value;
-  const filtered = queriesData.filter(q => {
-    if (search && !q.domain.toLowerCase().includes(search)) return false;
-    if (statusFilter !== 'all' && q.status !== statusFilter) return false;
-    return true;
-  });
-  document.getElementById('queries').innerHTML = filtered.map(q =>
-    '<tr><td>'+esc(q.time)+'</td><td><span class="badge '+q.status.toLowerCase()+'">'+esc(q.status)+'</span></td><td>'+esc(q.type)+'</td><td class="domain">'+esc(q.domain)+'</td></tr>'
+  document.getElementById('queries').innerHTML = queriesData.map(q =>
+    '<tr><td>'+esc(q.time)+'</td><td><span class="badge '+q.status.toLowerCase()+'">'+esc(q.status)+'</span></td><td>'+esc(q.type)+'</td><td class="domain clickable" onclick="drillDomain(&#39;'+esc(q.domain)+'&#39;)">'+esc(q.domain)+'</td><td>'+esc(q.client || '')+'</td></tr>'
   ).join('');
 }
-document.getElementById('query-search').addEventListener('input', renderQueries);
-document.getElementById('query-status-filter').addEventListener('change', renderQueries);
+
+function updatePagination() {
+  const page = Math.floor(queryOffset / queryLimit) + 1;
+  const totalPages = Math.max(1, Math.ceil(queryTotal / queryLimit));
+  document.getElementById('page-info').textContent = 'Page ' + page + ' of ' + totalPages;
+  document.getElementById('prev-page').disabled = queryOffset === 0;
+  document.getElementById('next-page').disabled = !queryHasMore;
+}
+
+function prevPage() {
+  queryOffset = Math.max(0, queryOffset - queryLimit);
+  fetchQueries();
+}
+
+function nextPage() {
+  if (queryHasMore) {
+    queryOffset += queryLimit;
+    fetchQueries();
+  }
+}
+
+document.getElementById('query-search').addEventListener('input', () => { queryOffset = 0; fetchQueries(); });
+document.getElementById('query-status-filter').addEventListener('change', () => { queryOffset = 0; fetchQueries(); });
+
+// --- Export ---
+function exportQueries(format) {
+  window.open('/api/queries/export?format=' + format, '_blank');
+}
 
 // --- Domains ---
 async function refreshDomains() {
@@ -1010,11 +1559,11 @@ async function refreshDomains() {
     document.getElementById('temp-count').textContent = tl.length;
 
     document.getElementById('allow-list').innerHTML = al.length
-      ? al.map(d => '<div class="domain-item"><span class="name">'+esc(d)+'</span><button class="btn btn-sm" onclick="removeDomain(&#39;allow&#39;,&#39;'+esc(d)+'&#39;)">Remove</button></div>').join('')
+      ? al.map(d => '<div class="domain-item"><span class="name clickable" onclick="drillDomain(&#39;'+esc(d)+'&#39;)">'+esc(d)+'</span><button class="btn btn-sm" onclick="removeDomain(&#39;allow&#39;,&#39;'+esc(d)+'&#39;)">Remove</button></div>').join('')
       : '<div class="empty-state">No custom allowed domains</div>';
 
     document.getElementById('block-list').innerHTML = bl.length
-      ? bl.map(d => '<div class="domain-item"><span class="name">'+esc(d)+'</span><button class="btn btn-sm" onclick="removeDomain(&#39;block&#39;,&#39;'+esc(d)+'&#39;)">Remove</button></div>').join('')
+      ? bl.map(d => '<div class="domain-item"><span class="name clickable" onclick="drillDomain(&#39;'+esc(d)+'&#39;)">'+esc(d)+'</span><button class="btn btn-sm" onclick="removeDomain(&#39;block&#39;,&#39;'+esc(d)+'&#39;)">Remove</button></div>').join('')
       : '<div class="empty-state">No custom blocked domains</div>';
 
     const now = Date.now() / 1000;
@@ -1147,6 +1696,172 @@ function copyToken() {
   navigator.clipboard.writeText(el.value).then(() => toast('Token copied'));
 }
 
+// --- History chart ---
+let historyData = [];
+
+function drawHistoryChart() {
+  const canvas = document.getElementById('history-canvas');
+  if (!canvas) return;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = rect.width - 32;
+  canvas.width = w * dpr;
+  canvas.height = 200 * dpr;
+  canvas.style.width = w + 'px';
+  canvas.style.height = '200px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, 200);
+
+  if (!historyData.length) return;
+
+  const pad = {top: 10, right: 10, bottom: 25, left: 45};
+  const cw = w - pad.left - pad.right;
+  const ch = 200 - pad.top - pad.bottom;
+
+  let maxVal = 0;
+  for (const b of historyData) {
+    const total = b.allowed + b.blocked;
+    if (total > maxVal) maxVal = total;
+  }
+  if (maxVal === 0) maxVal = 1;
+
+  const gridCount = 4;
+  const step = Math.ceil(maxVal / gridCount);
+  const yMax = step * gridCount;
+
+  ctx.strokeStyle = '#30363d';
+  ctx.lineWidth = 0.5;
+  ctx.fillStyle = '#484f58';
+  ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= gridCount; i++) {
+    const y = pad.top + ch - (i / gridCount) * ch;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(w - pad.right, y);
+    ctx.stroke();
+    ctx.fillText(String(step * i), pad.left - 6, y + 3);
+  }
+
+  const barW = Math.max(1, cw / historyData.length - 0.5);
+  const gap = cw / historyData.length;
+  for (let i = 0; i < historyData.length; i++) {
+    const b = historyData[i];
+    const x = pad.left + i * gap;
+    const allowedH = (b.allowed / yMax) * ch;
+    const blockedH = (b.blocked / yMax) * ch;
+    ctx.fillStyle = '#3fb950';
+    ctx.fillRect(x, pad.top + ch - allowedH - blockedH, barW, allowedH);
+    ctx.fillStyle = '#f85149';
+    ctx.fillRect(x, pad.top + ch - blockedH, barW, blockedH);
+  }
+
+  ctx.fillStyle = '#484f58';
+  ctx.textAlign = 'center';
+  ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+  for (let i = 0; i < historyData.length; i += 18) {
+    const b = historyData[i];
+    const x = pad.left + i * gap + barW / 2;
+    const t = new Date(b.time);
+    const label = t.getHours().toString().padStart(2,'0') + ':' + t.getMinutes().toString().padStart(2,'0');
+    ctx.fillText(label, x, 200 - 5);
+  }
+}
+
+function setupChartInteraction() {
+  const canvas = document.getElementById('history-canvas');
+  const tooltip = document.getElementById('chart-tooltip');
+  if (!canvas || !tooltip) return;
+
+  function getBucketIndex(e) {
+    if (!historyData.length) return -1;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const pad = {left: 45, right: 10};
+    const cw = rect.width - pad.left - pad.right;
+    const gap = cw / historyData.length;
+    return Math.floor((x - pad.left) / gap);
+  }
+
+  canvas.addEventListener('mousemove', function(e) {
+    const idx = getBucketIndex(e);
+    if (idx < 0 || idx >= historyData.length) { tooltip.style.display = 'none'; return; }
+    const b = historyData[idx];
+    const t = new Date(b.time);
+    const end = new Date(t.getTime() + 10*60*1000);
+    const tfmt = t2 => t2.getHours().toString().padStart(2,'0') + ':' + t2.getMinutes().toString().padStart(2,'0');
+    document.getElementById('tt-time').textContent = tfmt(t) + ' \\u2013 ' + tfmt(end);
+    document.getElementById('tt-allowed').textContent = 'Allowed: ' + b.allowed;
+    document.getElementById('tt-blocked').textContent = 'Blocked: ' + b.blocked;
+    tooltip.style.display = 'block';
+    let tx = e.clientX + 12;
+    let ty = e.clientY - 10;
+    if (tx + 160 > window.innerWidth) tx = e.clientX - 170;
+    tooltip.style.left = tx + 'px';
+    tooltip.style.top = ty + 'px';
+  });
+
+  canvas.addEventListener('mouseleave', function() {
+    tooltip.style.display = 'none';
+  });
+
+  // Click-to-filter: click a bar to filter queries to that time range
+  canvas.addEventListener('click', function(e) {
+    const idx = getBucketIndex(e);
+    if (idx < 0 || idx >= historyData.length) return;
+    const b = historyData[idx];
+    const t = new Date(b.time);
+    const end = new Date(t.getTime() + 10*60*1000);
+    const pad2 = n => String(n).padStart(2, '0');
+    const fmtDT = d => d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())+' '+pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds());
+    filterByTimeRange(fmtDT(t), fmtDT(end));
+  });
+}
+
+async function refreshHistory() {
+  try {
+    const data = await fetch('/api/history').then(r => r.json());
+    historyData = data.buckets || [];
+    drawHistoryChart();
+  } catch(e) { console.error('History refresh failed:', e); }
+}
+
+window.addEventListener('resize', drawHistoryChart);
+
+// --- Server-Sent Events ---
+function connectSSE() {
+  try {
+    const es = new EventSource('/api/stream');
+    es.onopen = function() {
+      sseConnected = true;
+      document.getElementById('live-badge').style.display = '';
+      pollInterval = 30000;
+    };
+    es.onmessage = function(e) {
+      try {
+        const q = JSON.parse(e.data);
+        queriesData.unshift(q);
+        if (queriesData.length > queryLimit) queriesData.pop();
+        if (document.getElementById('tab-queries').classList.contains('active')) {
+          renderQueries();
+        }
+      } catch(err) {}
+    };
+    es.onerror = function() {
+      sseConnected = false;
+      document.getElementById('live-badge').style.display = 'none';
+      pollInterval = 5000;
+      es.close();
+      // Reconnect after 5s
+      setTimeout(connectSSE, 5000);
+    };
+  } catch(e) {
+    // SSE not supported or failed
+  }
+}
+
 // --- Init ---
 async function init() {
   if (token) {
@@ -1157,18 +1872,23 @@ async function init() {
     showLogin();
   }
   refreshOverview();
+  refreshHistory();
+  setupChartInteraction();
+  fetchQueries();
   refreshDomains();
   refreshLists();
   refreshSettings();
+  connectSSE();
 }
 
 init();
 setInterval(() => {
   refreshOverview();
-  // Only refresh domains/lists if their tab is active
+  if (document.getElementById('tab-queries').classList.contains('active') && !sseConnected) fetchQueries();
   if (document.getElementById('tab-domains').classList.contains('active')) refreshDomains();
   if (document.getElementById('tab-lists').classList.contains('active')) refreshLists();
-}, 5000);
+}, pollInterval);
+setInterval(refreshHistory, 60000);
 </script>
 </body>
 </html>"""

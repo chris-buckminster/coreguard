@@ -23,25 +23,30 @@ class BlockingResolver(BaseResolver):
         stats: Stats,
         query_logger: QueryLogger,
         cache: DNSCache | None = None,
+        on_query: callable | None = None,
     ) -> None:
         self.filter = domain_filter
         self.config = config
         self.stats = stats
         self.query_logger = query_logger
         self.cache = cache
+        self.on_query = on_query
 
     def resolve(self, request: DNSRecord, handler) -> DNSRecord:
         qname = str(request.q.qname)
         qtype = QTYPE[request.q.qtype]
         qtype_int = request.q.qtype
+        client_ip = handler.client_address[0] if handler else None
 
         # 1. Check blocklist (always checked first so new blocks take effect immediately)
         if self.filter.is_blocked(qname):
             reply = self._make_block_reply(request, qname, qtype_int)
-            self.stats.record_query(qname, blocked=True)
-            self.query_logger.log_query(qname, qtype, blocked=True)
+            self.stats.record_query(qname, blocked=True, qtype=qtype, client_ip=client_ip)
+            self.query_logger.log_query(qname, qtype, blocked=True, client_ip=client_ip)
             if self.cache:
                 self.cache.put(qname, qtype_int, reply, is_blocked=True)
+            if self.on_query:
+                self.on_query(qname, qtype, True, client_ip)
             return reply
 
         # 2. Check cache
@@ -49,9 +54,11 @@ class BlockingResolver(BaseResolver):
             cached = self.cache.get(qname, qtype_int)
             if cached is not None:
                 cached.header.id = request.header.id
-                self.stats.record_query(qname, blocked=False)
+                self.stats.record_query(qname, blocked=False, qtype=qtype, client_ip=client_ip)
                 self.stats.record_cache_hit()
-                self.query_logger.log_query(qname, qtype, blocked=False)
+                self.query_logger.log_query(qname, qtype, blocked=False, client_ip=client_ip)
+                if self.on_query:
+                    self.on_query(qname, qtype, False, client_ip)
                 return cached
             self.stats.record_cache_miss()
 
@@ -65,7 +72,7 @@ class BlockingResolver(BaseResolver):
             logger.error("Upstream resolution failed for %s: %s", qname, e)
             reply = request.reply()
             reply.header.rcode = 2  # SERVFAIL
-            self.stats.record_query(qname, blocked=False, error=True)
+            self.stats.record_query(qname, blocked=False, error=True, qtype=qtype, client_ip=client_ip)
             return reply
 
         # 4. Check CNAME chain for blocked targets
@@ -74,18 +81,22 @@ class BlockingResolver(BaseResolver):
             if blocked_target:
                 logger.info("CNAME block: %s -> %s", qname, blocked_target)
                 reply = self._make_block_reply(request, qname, qtype_int)
-                self.stats.record_query(qname, blocked=True)
+                self.stats.record_query(qname, blocked=True, qtype=qtype, client_ip=client_ip)
                 self.stats.record_cname_block()
-                self.query_logger.log_query(qname, qtype, blocked=True)
+                self.query_logger.log_query(qname, qtype, blocked=True, client_ip=client_ip)
                 if self.cache:
                     self.cache.put(qname, qtype_int, reply, is_blocked=True)
+                if self.on_query:
+                    self.on_query(qname, qtype, True, client_ip)
                 return reply
 
         # 5. Cache and return
         if self.cache and response.header.rcode == 0:
             self.cache.put(qname, qtype_int, response)
-        self.stats.record_query(qname, blocked=False)
-        self.query_logger.log_query(qname, qtype, blocked=False)
+        self.stats.record_query(qname, blocked=False, qtype=qtype, client_ip=client_ip)
+        self.query_logger.log_query(qname, qtype, blocked=False, client_ip=client_ip)
+        if self.on_query:
+            self.on_query(qname, qtype, False, client_ip)
         return response
 
     def _make_block_reply(self, request: DNSRecord, qname: str, qtype_int: int) -> DNSRecord:

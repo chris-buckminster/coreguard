@@ -49,6 +49,24 @@
 - [x] Aimed at users who aren't comfortable with CLI tooling
 - [x] Authentication required (no longer read-only)
 
+**Dashboard query history graph** *(done)*
+- [x] "Queries over last 24 hours" stacked bar chart on the Overview tab
+- [x] Canvas-based, dark-themed, responsive with hover tooltips
+- [x] `/api/history` endpoint — log-parsed, 10-minute buckets, 60-second cache
+
+**Comprehensive dashboard improvements** *(done)*
+- [x] Query type breakdown donut chart (A, AAAA, CNAME, etc.)
+- [x] Live counter animation on stat cards (ease-out, 500ms)
+- [x] Dynamic favicon reflecting block rate
+- [x] Click-to-filter from history chart to queries tab
+- [x] Per-domain drill-down (clickable domains throughout UI)
+- [x] Sparklines on stat cards (last 12 buckets / 2 hours)
+- [x] Query log pagination with offset/limit/has_more
+- [x] CSV/JSON export of query log (`/api/queries/export`)
+- [x] Client tracking (client IP in stats, top clients table, filter by client)
+- [x] Server-Sent Events for real-time query streaming (`/api/stream`)
+- [x] SQLite-backed query logging (`query_db.py`) with batched writes, retention, log import
+
 **Regex-based blocking rules**
 - [ ] Custom rules beyond wildcards
 
@@ -64,10 +82,10 @@
 
 ## Phase 4 — Observability & data
 
-**Database-backed query logging**
-- [ ] SQLite (fits the single-machine, self-contained philosophy — no external DB server)
-- [ ] Enables richer dashboard queries: search, filter by time range, per-domain history
-- [ ] Migration path from current flat-file logging
+**Database-backed query logging** *(done)*
+- [x] SQLite (fits the single-machine, self-contained philosophy — no external DB server)
+- [x] Enables richer dashboard queries: search, filter by time range, per-domain history
+- [x] Migration path from current flat-file logging
 
 **Prometheus / metrics export**
 - [ ] `/metrics` endpoint in Prometheus exposition format

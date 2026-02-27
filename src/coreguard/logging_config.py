@@ -20,6 +20,9 @@ class QueryLogger:
             )
             self.logger.addHandler(handler)
 
-    def log_query(self, domain: str, qtype: str, blocked: bool) -> None:
+    def log_query(self, domain: str, qtype: str, blocked: bool, client_ip: str | None = None) -> None:
         status = "BLOCKED" if blocked else "ALLOWED"
-        self.logger.info("%s %s %s", status, qtype, domain)
+        if client_ip:
+            self.logger.info("%s %s %s %s", status, qtype, domain, client_ip)
+        else:
+            self.logger.info("%s %s %s", status, qtype, domain)

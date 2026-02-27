@@ -131,6 +131,9 @@ class Config:
     dashboard_port: int = 8080
     dashboard_token: str = ""
 
+    # Query database
+    query_db_retention_days: int = 7
+
 
 def ensure_dirs() -> None:
     """Create all required directories and files."""

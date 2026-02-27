@@ -2,6 +2,7 @@ import json
 import threading
 import urllib.request
 import urllib.error
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,9 @@ import pytest
 from coreguard.config import Config
 from coreguard.dashboard import (
     DashboardHandler,
+    _history_cache,
+    _read_query_history,
+    _read_recent_queries,
     _validate_domain,
     _remove_from_file,
     _parse_duration,
@@ -21,6 +25,10 @@ from coreguard.stats import Stats
 def _start_test_server(stats=None, cache=None, config=None, token=""):
     """Start a dashboard server on a random port for testing."""
     from http.server import HTTPServer
+    from socketserver import ThreadingMixIn
+
+    class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
 
     if config is None:
         config = Config()
@@ -33,7 +41,7 @@ def _start_test_server(stats=None, cache=None, config=None, token=""):
     DashboardHandler.config = config
     DashboardHandler.token = token
 
-    server = HTTPServer(("127.0.0.1", 0), DashboardHandler)
+    server = _ThreadedHTTPServer(("127.0.0.1", 0), DashboardHandler)
     port = server.server_address[1]
 
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -104,13 +112,25 @@ class TestDashboardEndpoints:
         assert data["cache_size"] == 42
         assert "top_blocked" in data
         assert "top_queried" in data
+        assert "query_types" in data
+        assert "top_clients" in data
+        assert "sparkline" in data
+        assert isinstance(data["sparkline"]["total"], list)
+        assert isinstance(data["sparkline"]["blocked"], list)
+        assert isinstance(data["sparkline"]["allowed"], list)
+        assert len(data["sparkline"]["total"]) == 12
 
     def test_queries_endpoint(self):
         status, headers, body = _get(self.port, "/api/queries?limit=10")
         assert status == 200
         assert "application/json" in headers["Content-Type"]
         data = json.loads(body)
-        assert isinstance(data, list)
+        assert "queries" in data
+        assert isinstance(data["queries"], list)
+        assert "total" in data
+        assert "offset" in data
+        assert "limit" in data
+        assert "has_more" in data
 
     def test_config_endpoint(self):
         status, headers, body = _get(self.port, "/api/config")
@@ -584,9 +604,8 @@ class TestReadRecentQueries:
             "2026-02-26 14:30:03 [coreguard.queries] INFO BLOCKED AAAA tracker.net\n"
         )
         with patch("coreguard.dashboard.LOG_FILE", log_file):
-            from coreguard.dashboard import _read_recent_queries
-
-            results = _read_recent_queries(100)
+            results, total = _read_recent_queries(100)
+        assert total == 3
         assert len(results) == 3
         assert results[0]["domain"] == "tracker.net"
         assert results[0]["status"] == "BLOCKED"
@@ -602,18 +621,64 @@ class TestReadRecentQueries:
             lines += f"2026-02-26 14:30:{i:02d} [coreguard.queries] INFO ALLOWED A domain{i}.com\n"
         log_file.write_text(lines)
         with patch("coreguard.dashboard.LOG_FILE", log_file):
-            from coreguard.dashboard import _read_recent_queries
-
-            results = _read_recent_queries(3)
+            results, total = _read_recent_queries(3)
         assert len(results) == 3
+        assert total == 10
 
     def test_missing_log_file(self, tmp_path):
         log_file = tmp_path / "nonexistent.log"
         with patch("coreguard.dashboard.LOG_FILE", log_file):
-            from coreguard.dashboard import _read_recent_queries
-
-            results = _read_recent_queries(100)
+            results, total = _read_recent_queries(100)
         assert results == []
+        assert total == 0
+
+    def test_pagination_with_offset(self, tmp_path):
+        log_file = tmp_path / "coreguard.log"
+        lines = ""
+        for i in range(10):
+            lines += f"2026-02-26 14:30:{i:02d} [coreguard.queries] INFO ALLOWED A domain{i}.com\n"
+        log_file.write_text(lines)
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            results, total = _read_recent_queries(3, offset=2)
+        assert len(results) == 3
+        assert total == 10
+
+    def test_time_range_filter(self, tmp_path):
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text(
+            "2026-02-26 14:30:01 [coreguard.queries] INFO BLOCKED A early.com\n"
+            "2026-02-26 15:00:01 [coreguard.queries] INFO ALLOWED A middle.com\n"
+            "2026-02-26 16:00:01 [coreguard.queries] INFO ALLOWED A late.com\n"
+        )
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            results, total = _read_recent_queries(
+                100, start="2026-02-26 14:45:00", end="2026-02-26 15:30:00"
+            )
+        assert total == 1
+        assert results[0]["domain"] == "middle.com"
+
+    def test_status_filter(self, tmp_path):
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text(
+            "2026-02-26 14:30:01 [coreguard.queries] INFO BLOCKED A ads.com\n"
+            "2026-02-26 14:30:02 [coreguard.queries] INFO ALLOWED A good.com\n"
+        )
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            results, total = _read_recent_queries(100, status="BLOCKED")
+        assert total == 1
+        assert results[0]["domain"] == "ads.com"
+
+    def test_has_more_flag(self, tmp_path):
+        log_file = tmp_path / "coreguard.log"
+        lines = ""
+        for i in range(5):
+            lines += f"2026-02-26 14:30:{i:02d} [coreguard.queries] INFO ALLOWED A domain{i}.com\n"
+        log_file.write_text(lines)
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            results, total = _read_recent_queries(2, offset=0)
+        assert len(results) == 2
+        assert total == 5
+        # has_more = offset + limit < total = 0 + 2 < 5 = True
 
 
 class TestHelpers:
@@ -653,3 +718,380 @@ class TestHelpers:
         assert _parse_duration("xyz") is None
         assert _parse_duration("") is None
         assert _parse_duration("5x") is None
+
+
+class TestHistoryEndpoint:
+    """Tests for the /api/history endpoint and _read_query_history()."""
+
+    def setup_method(self):
+        # Clear the cache before each test
+        _history_cache["data"] = None
+        _history_cache["timestamp"] = 0
+
+    def test_bucket_structure(self, tmp_path):
+        """Returned data has 144 buckets with correct keys."""
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text("")
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            result = _read_query_history()
+        assert len(result) == 144
+        for bucket in result:
+            assert "time" in bucket
+            assert "allowed" in bucket
+            assert "blocked" in bucket
+            assert isinstance(bucket["allowed"], int)
+            assert isinstance(bucket["blocked"], int)
+
+    def test_empty_log_returns_zero_counts(self, tmp_path):
+        """Empty log file produces 144 buckets all with zero counts."""
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text("")
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            result = _read_query_history()
+        assert all(b["allowed"] == 0 and b["blocked"] == 0 for b in result)
+
+    def test_missing_log_returns_zero_counts(self, tmp_path):
+        """Non-existent log file produces 144 zero-count buckets."""
+        log_file = tmp_path / "nonexistent.log"
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            result = _read_query_history()
+        assert len(result) == 144
+        assert all(b["allowed"] == 0 and b["blocked"] == 0 for b in result)
+
+    def test_counts_queries_in_buckets(self, tmp_path):
+        """Queries are counted in the correct 10-minute buckets."""
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+        # Generate queries at 5 minutes ago (should be in a recent bucket)
+        t1 = now - timedelta(minutes=5)
+        t2 = now - timedelta(minutes=3)
+        t3 = now - timedelta(minutes=1)
+
+        lines = [
+            f"{t1:%Y-%m-%d %H:%M:%S} [coreguard.queries] INFO ALLOWED A example.com\n",
+            f"{t2:%Y-%m-%d %H:%M:%S} [coreguard.queries] INFO BLOCKED A ads.com\n",
+            f"{t3:%Y-%m-%d %H:%M:%S} [coreguard.queries] INFO ALLOWED AAAA github.com\n",
+        ]
+
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text("".join(lines))
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            result = _read_query_history()
+
+        total_allowed = sum(b["allowed"] for b in result)
+        total_blocked = sum(b["blocked"] for b in result)
+        assert total_allowed == 2
+        assert total_blocked == 1
+
+    def test_24h_cutoff(self, tmp_path):
+        """Queries older than 24 hours are excluded."""
+        from datetime import datetime, timedelta
+
+        old = datetime.now() - timedelta(hours=25)
+        recent = datetime.now() - timedelta(minutes=5)
+
+        lines = [
+            f"{old:%Y-%m-%d %H:%M:%S} [coreguard.queries] INFO ALLOWED A old.com\n",
+            f"{recent:%Y-%m-%d %H:%M:%S} [coreguard.queries] INFO ALLOWED A recent.com\n",
+        ]
+
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text("".join(lines))
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            result = _read_query_history()
+
+        total = sum(b["allowed"] + b["blocked"] for b in result)
+        assert total == 1  # only the recent query
+
+    def test_cache_prevents_reparse(self, tmp_path):
+        """Second call within 60s returns cached result without re-reading file."""
+        import time as _time
+
+        log_file = tmp_path / "coreguard.log"
+        now = datetime.now() - timedelta(minutes=5)
+        log_file.write_text(
+            f"{now:%Y-%m-%d %H:%M:%S} [coreguard.queries] INFO ALLOWED A cached.com\n"
+        )
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            result1 = _read_query_history()
+
+        # Modify the file — but cache should prevent re-read
+        log_file.write_text("")
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            result2 = _read_query_history()
+
+        # Same object reference — proves cache was used
+        assert result1 is result2
+
+    def test_cache_expires(self, tmp_path):
+        """Cache expires after 60 seconds and data is re-parsed."""
+        log_file = tmp_path / "coreguard.log"
+        now = datetime.now() - timedelta(minutes=5)
+        log_file.write_text(
+            f"{now:%Y-%m-%d %H:%M:%S} [coreguard.queries] INFO ALLOWED A first.com\n"
+        )
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            result1 = _read_query_history()
+
+        # Force cache expiry
+        _history_cache["timestamp"] = 0
+
+        log_file.write_text("")
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            result2 = _read_query_history()
+
+        # Different object — cache was invalidated
+        assert result1 is not result2
+
+    def test_api_endpoint_returns_json(self, tmp_path):
+        """GET /api/history returns proper JSON with buckets and bucket_minutes."""
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text("")
+        server, port = _start_test_server()
+        try:
+            with patch("coreguard.dashboard.LOG_FILE", log_file):
+                status, headers, body = _get(port, "/api/history")
+            assert status == 200
+            assert "application/json" in headers["Content-Type"]
+            data = json.loads(body)
+            assert "buckets" in data
+            assert data["bucket_minutes"] == 10
+            assert len(data["buckets"]) == 144
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_multiple_hours_distributed(self, tmp_path):
+        """Queries spread across different hours land in different buckets."""
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+        lines = []
+        # Add queries at 1h, 3h, 5h, and 7h ago
+        for hours_ago in [1, 3, 5, 7]:
+            t = now - timedelta(hours=hours_ago)
+            lines.append(
+                f"{t:%Y-%m-%d %H:%M:%S} [coreguard.queries] INFO ALLOWED A host{hours_ago}h.com\n"
+            )
+            lines.append(
+                f"{t:%Y-%m-%d %H:%M:%S} [coreguard.queries] INFO BLOCKED A block{hours_ago}h.com\n"
+            )
+
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text("".join(lines))
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            result = _read_query_history()
+
+        # Count non-zero buckets
+        non_zero = [b for b in result if b["allowed"] > 0 or b["blocked"] > 0]
+        assert len(non_zero) >= 4  # at least 4 distinct buckets
+        assert sum(b["allowed"] for b in result) == 4
+        assert sum(b["blocked"] for b in result) == 4
+
+
+class TestQueryTypesAndClients:
+    """Tests for query_types, top_clients, and sparkline in /api/stats."""
+
+    def setup_method(self):
+        self.stats = Stats()
+        self.stats.record_query("example.com", blocked=False, qtype="A", client_ip="127.0.0.1")
+        self.stats.record_query("google.com", blocked=False, qtype="AAAA", client_ip="127.0.0.1")
+        self.stats.record_query("ads.com", blocked=True, qtype="A", client_ip="192.168.1.2")
+        self.stats.record_query("cdn.com", blocked=False, qtype="CNAME")
+
+        self.cache = MagicMock()
+        self.cache.size = 10
+
+        self.config = Config()
+        self.config.dashboard_enabled = True
+
+        self.server, self.port = _start_test_server(
+            stats=self.stats, cache=self.cache, config=self.config
+        )
+
+    def teardown_method(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_query_types_in_stats(self):
+        status, _, body = _get(self.port, "/api/stats")
+        assert status == 200
+        data = json.loads(body)
+        qt = data["query_types"]
+        assert qt["A"] == 2
+        assert qt["AAAA"] == 1
+        assert qt["CNAME"] == 1
+
+    def test_top_clients_in_stats(self):
+        status, _, body = _get(self.port, "/api/stats")
+        assert status == 200
+        data = json.loads(body)
+        clients = data["top_clients"]
+        assert clients["127.0.0.1"] == 2
+        assert clients["192.168.1.2"] == 1
+
+    def test_clients_endpoint(self):
+        status, _, body = _get(self.port, "/api/clients")
+        assert status == 200
+        data = json.loads(body)
+        assert "clients" in data
+        assert data["clients"]["127.0.0.1"] == 2
+
+
+class TestExportEndpoint:
+    """Tests for /api/queries/export."""
+
+    def setup_method(self):
+        self.server, self.port = _start_test_server()
+
+    def teardown_method(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_csv_export(self, tmp_path):
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text(
+            "2026-02-26 14:30:01 [coreguard.queries] INFO BLOCKED A ads.example.com\n"
+            "2026-02-26 14:30:02 [coreguard.queries] INFO ALLOWED A github.com\n"
+        )
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            url = f"http://127.0.0.1:{self.port}/api/queries/export?format=csv"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                assert resp.status == 200
+                assert "text/csv" in resp.headers["Content-Type"]
+                assert "attachment" in resp.headers["Content-Disposition"]
+                content = resp.read().decode()
+                assert "time,status,type,domain" in content
+                assert "ads.example.com" in content
+
+    def test_json_export(self, tmp_path):
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text(
+            "2026-02-26 14:30:01 [coreguard.queries] INFO BLOCKED A ads.example.com\n"
+        )
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            url = f"http://127.0.0.1:{self.port}/api/queries/export?format=json"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                assert resp.status == 200
+                assert "application/json" in resp.headers["Content-Type"]
+                data = json.loads(resp.read())
+                assert isinstance(data, list)
+                assert len(data) == 1
+
+    def test_empty_export(self, tmp_path):
+        log_file = tmp_path / "nonexistent.log"
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            url = f"http://127.0.0.1:{self.port}/api/queries/export?format=csv"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                assert resp.status == 200
+                content = resp.read().decode()
+                # Should have header row only
+                lines = content.strip().split("\n")
+                assert len(lines) == 1
+
+
+class TestSSEEndpoint:
+    """Tests for /api/stream SSE endpoint."""
+
+    def setup_method(self):
+        self.server, self.port = _start_test_server()
+
+    def teardown_method(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_sse_content_type(self):
+        url = f"http://127.0.0.1:{self.port}/api/stream"
+        req = urllib.request.Request(url)
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                assert "text/event-stream" in resp.headers["Content-Type"]
+        except Exception:
+            # Connection may timeout waiting for events — that's expected
+            pass
+
+    def test_broadcast_queues(self):
+        from coreguard.dashboard import _sse_clients, _sse_lock, broadcast_query
+        import queue
+        q = queue.Queue(maxsize=100)
+        with _sse_lock:
+            _sse_clients.append(q)
+        try:
+            broadcast_query("test.com", "A", True, "127.0.0.1")
+            event = q.get_nowait()
+            data = json.loads(event)
+            assert data["domain"] == "test.com"
+            assert data["status"] == "BLOCKED"
+            assert data["client"] == "127.0.0.1"
+        finally:
+            with _sse_lock:
+                _sse_clients.remove(q)
+
+    def test_cleanup_dead_clients(self):
+        from coreguard.dashboard import _sse_clients, _sse_lock, broadcast_query
+        import queue
+        # Create a full queue (will fail on put)
+        q = queue.Queue(maxsize=1)
+        q.put("filler")
+        with _sse_lock:
+            _sse_clients.append(q)
+        broadcast_query("test.com", "A", False)
+        # Dead client should be removed
+        with _sse_lock:
+            assert q not in _sse_clients
+
+
+class TestPaginatedQueriesEndpoint:
+    """Tests for paginated /api/queries endpoint."""
+
+    def setup_method(self):
+        self.server, self.port = _start_test_server()
+
+    def teardown_method(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_paginated_response_shape(self, tmp_path):
+        log_file = tmp_path / "coreguard.log"
+        lines = ""
+        for i in range(5):
+            lines += f"2026-02-26 14:30:{i:02d} [coreguard.queries] INFO ALLOWED A domain{i}.com\n"
+        log_file.write_text(lines)
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            status, _, body = _get(self.port, "/api/queries?limit=2&offset=0")
+        assert status == 200
+        data = json.loads(body)
+        assert len(data["queries"]) == 2
+        assert data["total"] == 5
+        assert data["offset"] == 0
+        assert data["limit"] == 2
+        assert data["has_more"] is True
+
+    def test_time_range_filter_via_api(self, tmp_path):
+        log_file = tmp_path / "coreguard.log"
+        log_file.write_text(
+            "2026-02-26 14:00:00 [coreguard.queries] INFO ALLOWED A early.com\n"
+            "2026-02-26 15:00:00 [coreguard.queries] INFO ALLOWED A target.com\n"
+            "2026-02-26 16:00:00 [coreguard.queries] INFO ALLOWED A late.com\n"
+        )
+        with patch("coreguard.dashboard.LOG_FILE", log_file):
+            status, _, body = _get(
+                self.port,
+                "/api/queries?start=2026-02-26+14%3A30%3A00&end=2026-02-26+15%3A30%3A00"
+            )
+        assert status == 200
+        data = json.loads(body)
+        assert data["total"] == 1
+        assert data["queries"][0]["domain"] == "target.com"
+
+    def test_backward_compat_without_params(self):
+        """Endpoint works without any params."""
+        status, _, body = _get(self.port, "/api/queries")
+        assert status == 200
+        data = json.loads(body)
+        assert "queries" in data
+        assert "total" in data

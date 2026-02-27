@@ -22,8 +22,13 @@ class Stats:
         self.cname_blocks = 0
         self.top_blocked: Counter[str] = Counter()
         self.top_queried: Counter[str] = Counter()
+        self.query_types: Counter[str] = Counter()
+        self.top_clients: Counter[str] = Counter()
 
-    def record_query(self, domain: str, blocked: bool, error: bool = False) -> None:
+    def record_query(
+        self, domain: str, blocked: bool, error: bool = False,
+        qtype: str | None = None, client_ip: str | None = None,
+    ) -> None:
         with self._lock:
             self.total_queries += 1
             self.top_queried[domain] += 1
@@ -32,6 +37,10 @@ class Stats:
                 self.top_blocked[domain] += 1
             if error:
                 self.error_queries += 1
+            if qtype:
+                self.query_types[qtype] += 1
+            if client_ip:
+                self.top_clients[client_ip] += 1
 
     def record_cache_hit(self) -> None:
         with self._lock:
@@ -52,6 +61,8 @@ class Stats:
                 self.top_queried = Counter(dict(self.top_queried.most_common(MAX_TRACKED_DOMAINS)))
             if len(self.top_blocked) > MAX_TRACKED_DOMAINS:
                 self.top_blocked = Counter(dict(self.top_blocked.most_common(MAX_TRACKED_DOMAINS)))
+            if len(self.top_clients) > MAX_TRACKED_DOMAINS:
+                self.top_clients = Counter(dict(self.top_clients.most_common(MAX_TRACKED_DOMAINS)))
 
     def to_dict(self) -> dict:
         with self._lock:
@@ -68,6 +79,8 @@ class Stats:
                 "cname_blocks": self.cname_blocks,
                 "top_blocked": dict(self.top_blocked.most_common(10)),
                 "top_queried": dict(self.top_queried.most_common(10)),
+                "query_types": dict(self.query_types),
+                "top_clients": dict(self.top_clients.most_common(10)),
             }
 
     def save(self, path: Path) -> None:
