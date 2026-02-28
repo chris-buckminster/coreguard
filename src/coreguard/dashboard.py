@@ -165,6 +165,75 @@ def _send_self_sighup() -> None:
         pass
 
 
+def _format_prometheus_metrics(stats: Stats, cache=None, domain_filter=None) -> list[str]:
+    """Format all metrics in Prometheus text exposition format."""
+    lines: list[str] = []
+
+    def _counter(name: str, help_text: str, value) -> None:
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} counter")
+        lines.append(f"{name} {value}")
+
+    def _gauge(name: str, help_text: str, value) -> None:
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} gauge")
+        lines.append(f"{name} {value}")
+
+    with stats._lock:
+        _counter("coreguard_queries_total",
+                 "Total DNS queries received.", stats.total_queries)
+        _counter("coreguard_queries_blocked_total",
+                 "Total DNS queries blocked.", stats.blocked_queries)
+        _counter("coreguard_queries_errors_total",
+                 "Total DNS queries that resulted in errors.", stats.error_queries)
+        _counter("coreguard_cache_hits_total",
+                 "Total cache hits.", stats.cache_hits)
+        _counter("coreguard_cache_misses_total",
+                 "Total cache misses.", stats.cache_misses)
+        _counter("coreguard_cname_blocks_total",
+                 "Total CNAME-chain blocks.", stats.cname_blocks)
+
+        # Labeled counter: query types
+        lines.append("# HELP coreguard_queries_by_type Total queries by DNS record type.")
+        lines.append("# TYPE coreguard_queries_by_type counter")
+        for qtype, count in stats.query_types.items():
+            lines.append(f'coreguard_queries_by_type{{qtype="{qtype}"}} {count}')
+
+        # Latency histogram snapshot
+        snap_buckets = list(stats._latency_buckets)
+        snap_counts = list(stats._latency_counts)
+        snap_sum = stats._latency_sum
+        snap_total = stats._latency_total
+
+    # Histogram (outside the lock — we have a snapshot)
+    lines.append("# HELP coreguard_upstream_latency_seconds Upstream DNS resolution latency.")
+    lines.append("# TYPE coreguard_upstream_latency_seconds histogram")
+    cumulative = 0
+    for bound, count in zip(snap_buckets, snap_counts):
+        cumulative += count
+        lines.append(f'coreguard_upstream_latency_seconds_bucket{{le="{bound}"}} {cumulative}')
+    lines.append(f'coreguard_upstream_latency_seconds_bucket{{le="+Inf"}} {snap_total}')
+    lines.append(f"coreguard_upstream_latency_seconds_sum {snap_sum}")
+    lines.append(f"coreguard_upstream_latency_seconds_count {snap_total}")
+
+    # Gauges
+    if cache is not None:
+        _gauge("coreguard_cache_size",
+               "Current number of entries in the DNS cache.", cache.size)
+        _gauge("coreguard_cache_max_entries",
+               "Maximum cache capacity.", cache.max_entries)
+
+    if domain_filter is not None:
+        _gauge("coreguard_blocklist_size",
+               "Number of domains in the blocklist.", domain_filter.blocked_count)
+        _gauge("coreguard_allowlist_size",
+               "Number of domains in the allowlist.", domain_filter.allowed_count)
+        _gauge("coreguard_regex_patterns",
+               "Number of active regex patterns.", domain_filter.regex_count)
+
+    return lines
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the coreguard dashboard."""
 
@@ -172,6 +241,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     cache = None
     config: Config = None
     token: str = ""
+    domain_filter = None
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -196,6 +266,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_clients()
         elif path == "/api/stream":
             self._serve_sse()
+        elif path == "/metrics":
+            self._serve_metrics()
         else:
             self.send_error(404)
 
@@ -468,6 +540,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             with _sse_lock:
                 if q in _sse_clients:
                     _sse_clients.remove(q)
+
+    def _serve_metrics(self) -> None:
+        """Serve Prometheus exposition format metrics."""
+        lines = _format_prometheus_metrics(
+            self.stats, self.cache, self.domain_filter
+        )
+        body = "\n".join(lines).encode("utf-8") + b"\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_html(self) -> None:
         body = DASHBOARD_HTML.encode()
@@ -932,7 +1016,7 @@ class _ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def start_dashboard(config: Config, stats: Stats, cache=None) -> HTTPServer | None:
+def start_dashboard(config: Config, stats: Stats, cache=None, domain_filter=None) -> HTTPServer | None:
     """Start the dashboard web server in a background thread.
 
     Returns the server instance, or None if the dashboard is disabled.
@@ -950,6 +1034,7 @@ def start_dashboard(config: Config, stats: Stats, cache=None) -> HTTPServer | No
     DashboardHandler.cache = cache
     DashboardHandler.config = config
     DashboardHandler.token = config.dashboard_token
+    DashboardHandler.domain_filter = domain_filter
 
     try:
         server = _ThreadedHTTPServer(("127.0.0.1", config.dashboard_port), DashboardHandler)

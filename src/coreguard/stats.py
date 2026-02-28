@@ -24,6 +24,13 @@ class Stats:
         self.top_queried: Counter[str] = Counter()
         self.query_types: Counter[str] = Counter()
         self.top_clients: Counter[str] = Counter()
+        # Upstream latency histogram
+        self._latency_buckets: list[float] = [
+            0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+        ]
+        self._latency_counts: list[int] = [0] * len(self._latency_buckets)
+        self._latency_sum: float = 0.0
+        self._latency_total: int = 0
 
     def record_query(
         self, domain: str, blocked: bool, error: bool = False,
@@ -53,6 +60,26 @@ class Stats:
     def record_cname_block(self) -> None:
         with self._lock:
             self.cname_blocks += 1
+
+    def record_upstream_latency(self, seconds: float) -> None:
+        """Record an upstream resolution latency sample."""
+        with self._lock:
+            self._latency_sum += seconds
+            self._latency_total += 1
+            for i, bound in enumerate(self._latency_buckets):
+                if seconds <= bound:
+                    self._latency_counts[i] += 1
+                    break
+
+    def latency_snapshot(self) -> dict:
+        """Return a snapshot of latency histogram data."""
+        with self._lock:
+            return {
+                "buckets": list(self._latency_buckets),
+                "counts": list(self._latency_counts),
+                "sum": self._latency_sum,
+                "count": self._latency_total,
+            }
 
     def trim(self) -> None:
         """Trim counters to prevent unbounded memory growth."""

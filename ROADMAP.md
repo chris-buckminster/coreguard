@@ -96,10 +96,10 @@
 - [x] Enables richer dashboard queries: search, filter by time range, per-domain history
 - [x] Migration path from current flat-file logging
 
-**Prometheus / metrics export**
-- [ ] `/metrics` endpoint in Prometheus exposition format
-- [ ] Query rates, block rates, cache hit ratio, upstream latency, list sizes
-- [ ] Enables Grafana dashboards and alerting for power users
+**Prometheus / metrics export** *(done)*
+- [x] `/metrics` endpoint in Prometheus exposition format
+- [x] Query rates, block rates, cache hit ratio, upstream latency, list sizes
+- [x] Enables Grafana dashboards and alerting for power users
 
 ---
 

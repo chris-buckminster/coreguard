@@ -9,8 +9,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from coreguard.config import Config
+from coreguard.cache import DNSCache
 from coreguard.dashboard import (
     DashboardHandler,
+    _format_prometheus_metrics,
     _history_cache,
     _read_query_history,
     _read_recent_queries,
@@ -19,6 +21,7 @@ from coreguard.dashboard import (
     _parse_duration,
     start_dashboard,
 )
+from coreguard.filtering import DomainFilter
 from coreguard.stats import Stats
 
 
@@ -1095,3 +1098,115 @@ class TestPaginatedQueriesEndpoint:
         data = json.loads(body)
         assert "queries" in data
         assert "total" in data
+
+
+class TestPrometheusMetrics:
+    """Unit tests for the Prometheus metrics formatter."""
+
+    def test_basic_counters(self):
+        stats = Stats()
+        stats.record_query("example.com", blocked=False, qtype="A")
+        stats.record_query("ads.com", blocked=True, qtype="A")
+        stats.record_cache_hit()
+
+        text = "\n".join(_format_prometheus_metrics(stats))
+
+        assert "# TYPE coreguard_queries_total counter" in text
+        assert "coreguard_queries_total 2" in text
+        assert "coreguard_queries_blocked_total 1" in text
+        assert "coreguard_cache_hits_total 1" in text
+        assert "coreguard_cache_misses_total 0" in text
+        assert "coreguard_queries_errors_total 0" in text
+        assert "coreguard_cname_blocks_total 0" in text
+
+    def test_query_type_labels(self):
+        stats = Stats()
+        stats.record_query("a.com", blocked=False, qtype="A")
+        stats.record_query("b.com", blocked=False, qtype="AAAA")
+        stats.record_query("c.com", blocked=False, qtype="A")
+
+        text = "\n".join(_format_prometheus_metrics(stats))
+
+        assert 'coreguard_queries_by_type{qtype="A"} 2' in text
+        assert 'coreguard_queries_by_type{qtype="AAAA"} 1' in text
+
+    def test_latency_histogram(self):
+        stats = Stats()
+        stats.record_upstream_latency(0.003)  # bucket 0.005
+        stats.record_upstream_latency(0.008)  # bucket 0.01
+        stats.record_upstream_latency(0.05)   # bucket 0.05
+
+        text = "\n".join(_format_prometheus_metrics(stats))
+
+        assert "# TYPE coreguard_upstream_latency_seconds histogram" in text
+        assert 'coreguard_upstream_latency_seconds_bucket{le="0.005"} 1' in text
+        assert 'coreguard_upstream_latency_seconds_bucket{le="0.01"} 2' in text
+        assert 'coreguard_upstream_latency_seconds_bucket{le="0.05"} 3' in text
+        assert 'coreguard_upstream_latency_seconds_bucket{le="+Inf"} 3' in text
+        assert "coreguard_upstream_latency_seconds_count 3" in text
+
+    def test_cache_gauges(self):
+        stats = Stats()
+        cache = DNSCache(max_entries=5000)
+
+        text = "\n".join(_format_prometheus_metrics(stats, cache=cache))
+
+        assert "# TYPE coreguard_cache_size gauge" in text
+        assert "coreguard_cache_size 0" in text
+        assert "coreguard_cache_max_entries 5000" in text
+
+    def test_filter_gauges(self):
+        stats = Stats()
+        df = DomainFilter()
+        df.load_blocklist(["a.com", "b.com", "c.com"])
+        df.load_allowlist(["good.com"])
+
+        text = "\n".join(_format_prometheus_metrics(stats, domain_filter=df))
+
+        assert "coreguard_blocklist_size 3" in text
+        assert "coreguard_allowlist_size 1" in text
+        assert "coreguard_regex_patterns 0" in text
+
+    def test_no_optional_sources(self):
+        """Metrics work without cache or domain_filter."""
+        stats = Stats()
+        text = "\n".join(_format_prometheus_metrics(stats))
+
+        assert "coreguard_queries_total 0" in text
+        assert "coreguard_cache_size" not in text
+        assert "coreguard_blocklist_size" not in text
+
+
+class TestMetricsEndpoint:
+    """Integration tests for the /metrics HTTP endpoint."""
+
+    def setup_method(self):
+        self.stats = Stats()
+        self.stats.record_query("example.com", blocked=False, qtype="A")
+        self.server, self.port = _start_test_server(stats=self.stats)
+
+    def teardown_method(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_returns_200(self):
+        status, headers, body = _get(self.port, "/metrics")
+        assert status == 200
+        assert "text/plain" in headers.get("Content-Type", "")
+
+    def test_prometheus_format(self):
+        status, headers, body = _get(self.port, "/metrics")
+        text = body.decode("utf-8")
+        assert "# HELP coreguard_queries_total" in text
+        assert "# TYPE coreguard_queries_total counter" in text
+        assert "coreguard_queries_total 1" in text
+
+    def test_no_auth_required(self):
+        """The /metrics endpoint should be accessible without a token."""
+        server, port = _start_test_server(stats=self.stats, token="secret123")
+        try:
+            status, _, _ = _get(port, "/metrics")
+            assert status == 200
+        finally:
+            server.shutdown()
+            server.server_close()

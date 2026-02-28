@@ -274,7 +274,7 @@ def start(ctx, foreground):
     # Start dashboard
     from coreguard.dashboard import start_dashboard
 
-    dashboard_server = start_dashboard(config, stats, cache)
+    dashboard_server = start_dashboard(config, stats, cache, domain_filter)
 
     # Configure macOS DNS
     set_dns_to_local()

@@ -53,6 +53,7 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **Live query logging** — see exactly what's being blocked in real time
 - **Web dashboard** — full management UI at `http://127.0.0.1:8080` — view stats, manage domains, toggle filter lists, configure schedules, manage parental controls, and stop the daemon from the browser
 - **JSON output** — `--json` flag on every command for scripting and automation (`coreguard status --json | jq`)
+- **Prometheus metrics** — `/metrics` endpoint in Prometheus exposition format for Grafana dashboards and alerting
 - **Statistics** — track total queries, block rate, cache hit rate, and top blocked domains
 - **Graceful DNS restore** — original DNS settings are backed up and restored on stop
 - **Foreground mode** — run interactively for debugging and testing
@@ -371,6 +372,42 @@ Disable the dashboard or change the port in `config.toml`:
 [dashboard]
 enabled = true
 port = 8080
+```
+
+### Prometheus Metrics
+
+When the dashboard is enabled, a Prometheus-compatible metrics endpoint is available at `http://127.0.0.1:8080/metrics`. No authentication is required.
+
+```bash
+# Scrape metrics
+curl http://127.0.0.1:8080/metrics
+```
+
+Exported metrics:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `coreguard_queries_total` | counter | Total DNS queries received |
+| `coreguard_queries_blocked_total` | counter | Total queries blocked |
+| `coreguard_queries_errors_total` | counter | Total query errors |
+| `coreguard_cache_hits_total` | counter | Cache hits |
+| `coreguard_cache_misses_total` | counter | Cache misses |
+| `coreguard_cname_blocks_total` | counter | CNAME-chain blocks |
+| `coreguard_queries_by_type` | counter | Queries by DNS record type (labeled by `qtype`) |
+| `coreguard_upstream_latency_seconds` | histogram | Upstream DNS resolution latency |
+| `coreguard_cache_size` | gauge | Current cache entries |
+| `coreguard_cache_max_entries` | gauge | Cache capacity |
+| `coreguard_blocklist_size` | gauge | Blocked domain count |
+| `coreguard_allowlist_size` | gauge | Allowed domain count |
+| `coreguard_regex_patterns` | gauge | Active regex pattern count |
+
+Add the scrape target to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: coreguard
+    static_configs:
+      - targets: ["127.0.0.1:8080"]
 ```
 
 ### JSON Output

@@ -1,4 +1,5 @@
 import logging
+import time
 from collections.abc import Callable
 
 from dnslib import QTYPE, RR, A, AAAA, DNSRecord
@@ -80,7 +81,9 @@ class BlockingResolver(BaseResolver):
         # 3. Forward to upstream
         try:
             raw_request = request.pack()
+            t0 = time.monotonic()
             raw_response = resolve_upstream(raw_request, self.config)
+            self.stats.record_upstream_latency(time.monotonic() - t0)
             response = DNSRecord.parse(raw_response)
             response.header.id = request.header.id
         except Exception as e:

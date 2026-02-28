@@ -73,6 +73,14 @@ class TestBlockingResolver:
         mock_upstream.assert_called_once()
 
     @patch("coreguard.dns_server.resolve_upstream")
+    def test_records_upstream_latency(self, mock_upstream):
+        mock_upstream.return_value = _make_upstream_response("github.com")
+        request = _make_request("github.com")
+        self.resolver.resolve(request, None)
+        assert self.stats._latency_total == 1
+        assert self.stats._latency_sum > 0
+
+    @patch("coreguard.dns_server.resolve_upstream")
     def test_returns_servfail_on_upstream_error(self, mock_upstream):
         mock_upstream.side_effect = Exception("connection timeout")
         request = _make_request("github.com")
