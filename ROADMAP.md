@@ -159,7 +159,54 @@
 
 ---
 
-## Phase 6 — Per-app firewall
+## Phase 6 — Polish & hardening
+
+**Configurable block response IP**
+- [ ] Allow users to choose `127.0.0.1` instead of `0.0.0.0` for blocked domains
+- [ ] Config option in `config.toml`
+
+**Dashboard token rotation**
+- [ ] "Regenerate Token" button in the dashboard Settings tab
+- [ ] Invalidates old token immediately, displays new one
+
+**DNS label length validation**
+- [ ] Validate domain labels during blocklist parsing (max 63 chars per label, 253 total)
+- [ ] Log and skip malformed entries instead of loading them
+
+**Per-provider DNSSEC policy**
+- [ ] Allow DNSSEC strict/relaxed mode per upstream provider
+- [ ] Useful when some providers support DNSSEC better than others
+
+---
+
+## Phase 7 — Feature additions
+
+**LAN-mode (network-wide blocking)**
+- [ ] Listen on `0.0.0.0` to serve other devices on the local network
+- [ ] Makes Coreguard usable as a household DNS blocker (Pi-hole territory)
+- [ ] Requires firewall/access control considerations
+
+**CLI query log search**
+- [ ] `coreguard log --grep reddit.com` — search query history from the command line
+- [ ] Filter by status (blocked/allowed), time range, query type
+
+**Blocklist hit attribution**
+- [ ] Show which filter list blocked a given domain
+- [ ] Displayed in dashboard query log and CLI output
+- [ ] Helps users debug false positives and tune lists
+
+**Dashboard HTTPS**
+- [ ] Self-signed certificate generation for local TLS
+- [ ] Required if dashboard is exposed to LAN in network-wide mode
+- [ ] Config option to enable/disable
+
+**Config backup & export**
+- [ ] `coreguard config export` / `coreguard config import` commands
+- [ ] One-command snapshot and restore of all settings, custom lists, and schedules
+
+---
+
+## Phase 8 — Per-app firewall
 
 **Per-application network rules**
 - [ ] Block or allow network access on a per-app basis (like Little Snitch / LuLu)
@@ -170,10 +217,23 @@
 
 ---
 
+## Phase 9 — Platform expansion
+
+**iOS companion app**
+- [ ] DNS profile + on-device filtering for iPhone/iPad
+- [ ] Shared blocklist configuration with macOS Coreguard
+- [ ] Huge market opportunity (1Blocker charges $15/yr for this)
+
+**Network-wide mode with per-device profiles**
+- [ ] Serve as the DNS server for all household devices
+- [ ] Per-device blocking profiles (e.g. kids vs. adults)
+- [ ] Moves beyond single-machine into Pi-hole / AdGuard Home territory
+
+---
+
 ## Not planned
 
 | Feature | Why not |
 |---------|---------|
-| Per-client/device profiles | Coreguard is single-machine, not a network server |
 | Built-in DHCP server | Out of scope — coreguard is a DNS blocker, not a router |
 | Browser-level HTTPS filtering | Requires invasive TLS interception — against the privacy-first ethos |

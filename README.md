@@ -60,6 +60,25 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **Foreground mode** — run interactively for debugging and testing
 - **Minimal footprint** — pure Python, no background services beyond the daemon itself
 
+## How Coreguard Compares
+
+| | Pi-hole | AdGuard Home | NextDNS | Coreguard |
+|---|---|---|---|---|
+| **Runs natively on macOS** | No (Linux/Docker) | Yes (but as a server) | Cloud only | Yes (native daemon) |
+| **Encrypted DNS built-in** | No (needs proxy) | DoH/DoT/DoQ | DoH/DoT | DoH/DoT/DoQ |
+| **System-wide blocking** | Network-level | Network-level | Via app/config | Yes (local DNS) |
+| **Menubar integration** | No | No | No | Yes |
+| **Parental controls** | No | Yes | Yes | Yes |
+| **Scheduled filtering** | No | No | Yes (recreation time) | Yes |
+| **VPN-safe** | N/A | No | N/A | Yes |
+| **Self-healing DNS** | N/A | No | Via app | Yes |
+| **CNAME blocking** | No | Yes | Yes | Yes |
+| **Per-app firewall** | No | No | No | No |
+| **Price** | Free | Free | Free/$20yr | Free |
+| **Setup complexity** | High (server) | Medium (server) | Low (cloud) | Low (one command) |
+
+Coreguard is the only free, open-source, macOS-native DNS blocker that combines encrypted upstream DNS, a polished dashboard, menubar integration, parental controls, and one-command setup. Pi-hole and AdGuard Home require server infrastructure. NextDNS sends all queries to the cloud. Little Snitch costs $59 and is a firewall, not a DNS blocker.
+
 ## Requirements
 
 - macOS 10.15 (Catalina) or later
