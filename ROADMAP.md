@@ -229,6 +229,12 @@
 - [ ] Per-device blocking profiles (e.g. kids vs. adults)
 - [ ] Moves beyond single-machine into Pi-hole / AdGuard Home territory
 
+**Browser extensions (cosmetic filtering)**
+- [ ] Companion extensions for Safari, Chrome, and Firefox
+- [ ] Remove empty containers, placeholders, and layout gaps left behind by DNS-blocked ads
+- [ ] Communicate with the local Coreguard daemon to stay in sync with blocklist state
+- [ ] Completes the blocking story — Coreguard handles network-level blocking, the extension handles visual cleanup
+
 ---
 
 ## Not planned
