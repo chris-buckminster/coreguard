@@ -1,6 +1,6 @@
 # Coreguard Roadmap
 
-## Phase 1 — Strengthen the foundation
+## Phase 1 — Foundation *(done)*
 
 **Test coverage** *(done)*
 - [x] Add tests for `daemon.py` (fork/daemonize, PID management, signal handling, main loop)
@@ -17,7 +17,7 @@
 
 ---
 
-## Phase 2 — Differentiate from competitors
+## Phase 2 — Differentiate from competitors *(done)*
 
 **Menubar status agent** *(done)*
 - [x] Lightweight macOS menubar icon using `rumps` (~100 lines MVP)
@@ -37,7 +37,7 @@
 
 ---
 
-## Phase 3 — Smart blocking & management UI
+## Phase 3 — Smart blocking & management UI *(done)*
 
 **Breakage quick-unblock (menubar integration)** *(done)*
 - [x] "Last 5 blocked domains" submenu in the menubar agent
@@ -89,7 +89,7 @@
 
 ---
 
-## Phase 4 — Observability & data
+## Phase 4 — Observability & data *(done)*
 
 **Database-backed query logging** *(done)*
 - [x] SQLite (fits the single-machine, self-contained philosophy — no external DB server)
@@ -103,7 +103,7 @@
 
 ---
 
-## Phase 5 — Advanced protocol & security
+## Phase 5 — Advanced protocol & security *(done)*
 
 **DNSSEC validation** *(done)*
 - [x] Set DO (DNSSEC OK) bit on outgoing queries via EDNS0
@@ -119,7 +119,7 @@
 
 ---
 
-## Phase 5.5 — Dashboard polish *(done)*
+## Phase 6 — Dashboard polish *(done)* 
 
 **Live updates** *(done)*
 - [x] Stat cards and query feed refresh every 1 second
@@ -141,7 +141,7 @@
 
 ---
 
-## Phase 5.6 — Hardening & reliability audit *(done)*
+## Phase 7 — Hardening & reliability audit *(done)*
 
 **Full codebase audit** *(done)*
 - [x] Review all source files for reliability concerns (race conditions, resource leaks, crash scenarios)
@@ -159,7 +159,7 @@
 
 ---
 
-## Phase 6 — Polish & hardening
+## Phase 8 — Polish & hardening
 
 **Configurable block response IP**
 - [ ] Allow users to choose `127.0.0.1` instead of `0.0.0.0` for blocked domains
@@ -179,7 +179,7 @@
 
 ---
 
-## Phase 7 — Feature additions
+## Phase 9 — Feature additions
 
 **LAN-mode (network-wide blocking)**
 - [ ] Listen on `0.0.0.0` to serve other devices on the local network
@@ -206,7 +206,7 @@
 
 ---
 
-## Phase 8 — Per-app firewall
+## Phase 10 — Per-app firewall
 
 **Per-application network rules**
 - [ ] Block or allow network access on a per-app basis (like Little Snitch / LuLu)
@@ -217,7 +217,7 @@
 
 ---
 
-## Phase 9 — Platform expansion
+## Phase 11 — Platform expansion
 
 **iOS companion app**
 - [ ] DNS profile + on-device filtering for iPhone/iPad
