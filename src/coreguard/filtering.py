@@ -1,62 +1,141 @@
 import re
+from dataclasses import dataclass
 from typing import Iterable
 
 
+@dataclass(frozen=True)
+class _FilterState:
+    """Immutable snapshot of all filter collections.
+
+    Assigned atomically to DomainFilter._state so reader threads always
+    see a consistent view without locks.
+    """
+    blocked: frozenset
+    allowed: frozenset
+    blocked_wildcards: tuple
+    allowed_wildcards: tuple
+    blocked_regex: tuple
+    allowed_regex: tuple
+
+
+_EMPTY_STATE = _FilterState(
+    blocked=frozenset(),
+    allowed=frozenset(),
+    blocked_wildcards=(),
+    allowed_wildcards=(),
+    blocked_regex=(),
+    allowed_regex=(),
+)
+
+
 class DomainFilter:
-    """Fast domain matching engine using set lookups with subdomain walk."""
+    """Fast domain matching engine using set lookups with subdomain walk.
+
+    Thread-safe via snapshot-swap: all reads grab a local reference to
+    the immutable _FilterState; all mutations build a new state and
+    assign in a single reference write.
+    """
 
     def __init__(self) -> None:
-        self._blocked: set[str] = set()
-        self._allowed: set[str] = set()
-        self._blocked_wildcards: list[re.Pattern] = []
-        self._allowed_wildcards: list[re.Pattern] = []
-        self._blocked_regex: list[re.Pattern] = []
-        self._allowed_regex: list[re.Pattern] = []
+        self._state: _FilterState = _EMPTY_STATE
 
     def load_blocklist(self, domains: Iterable[str]) -> None:
         """Add domains to the block set."""
-        self._blocked.update(d.lower().strip(".") for d in domains if d.strip())
+        new = frozenset(d.lower().strip(".") for d in domains if d.strip())
+        state = self._state
+        self._state = _FilterState(
+            blocked=state.blocked | new,
+            allowed=state.allowed,
+            blocked_wildcards=state.blocked_wildcards,
+            allowed_wildcards=state.allowed_wildcards,
+            blocked_regex=state.blocked_regex,
+            allowed_regex=state.allowed_regex,
+        )
 
     def load_allowlist(self, domains: Iterable[str]) -> None:
         """Add domains to the allow set."""
-        self._allowed.update(d.lower().strip(".") for d in domains if d.strip())
+        new = frozenset(d.lower().strip(".") for d in domains if d.strip())
+        state = self._state
+        self._state = _FilterState(
+            blocked=state.blocked,
+            allowed=state.allowed | new,
+            blocked_wildcards=state.blocked_wildcards,
+            allowed_wildcards=state.allowed_wildcards,
+            blocked_regex=state.blocked_regex,
+            allowed_regex=state.allowed_regex,
+        )
 
     def load_blocklist_wildcards(self, patterns: Iterable[str]) -> None:
         """Add wildcard patterns to the block list."""
+        compiled = []
         for p in patterns:
-            compiled = self._compile_wildcard(p)
-            if compiled:
-                self._blocked_wildcards.append(compiled)
+            c = self._compile_wildcard(p)
+            if c:
+                compiled.append(c)
+        state = self._state
+        self._state = _FilterState(
+            blocked=state.blocked,
+            allowed=state.allowed,
+            blocked_wildcards=state.blocked_wildcards + tuple(compiled),
+            allowed_wildcards=state.allowed_wildcards,
+            blocked_regex=state.blocked_regex,
+            allowed_regex=state.allowed_regex,
+        )
 
     def load_allowlist_wildcards(self, patterns: Iterable[str]) -> None:
         """Add wildcard patterns to the allow list."""
+        compiled = []
         for p in patterns:
-            compiled = self._compile_wildcard(p)
-            if compiled:
-                self._allowed_wildcards.append(compiled)
+            c = self._compile_wildcard(p)
+            if c:
+                compiled.append(c)
+        state = self._state
+        self._state = _FilterState(
+            blocked=state.blocked,
+            allowed=state.allowed,
+            blocked_wildcards=state.blocked_wildcards,
+            allowed_wildcards=state.allowed_wildcards + tuple(compiled),
+            blocked_regex=state.blocked_regex,
+            allowed_regex=state.allowed_regex,
+        )
 
     def load_blocklist_regex(self, patterns: Iterable[str]) -> None:
         """Add regex patterns to the block list."""
+        compiled = []
         for p in patterns:
-            compiled = self._compile_regex(p)
-            if compiled:
-                self._blocked_regex.append(compiled)
+            c = self._compile_regex(p)
+            if c:
+                compiled.append(c)
+        state = self._state
+        self._state = _FilterState(
+            blocked=state.blocked,
+            allowed=state.allowed,
+            blocked_wildcards=state.blocked_wildcards,
+            allowed_wildcards=state.allowed_wildcards,
+            blocked_regex=state.blocked_regex + tuple(compiled),
+            allowed_regex=state.allowed_regex,
+        )
 
     def load_allowlist_regex(self, patterns: Iterable[str]) -> None:
         """Add regex patterns to the allow list."""
+        compiled = []
         for p in patterns:
-            compiled = self._compile_regex(p)
-            if compiled:
-                self._allowed_regex.append(compiled)
+            c = self._compile_regex(p)
+            if c:
+                compiled.append(c)
+        state = self._state
+        self._state = _FilterState(
+            blocked=state.blocked,
+            allowed=state.allowed,
+            blocked_wildcards=state.blocked_wildcards,
+            allowed_wildcards=state.allowed_wildcards,
+            blocked_regex=state.blocked_regex,
+            allowed_regex=state.allowed_regex + tuple(compiled),
+        )
 
     def clear(self) -> None:
         """Clear all loaded domains, wildcard patterns, and regex patterns."""
-        self._blocked.clear()
-        self._allowed.clear()
-        self._blocked_wildcards.clear()
-        self._allowed_wildcards.clear()
-        self._blocked_regex.clear()
-        self._allowed_regex.clear()
+        self._state = _EMPTY_STATE
 
     def is_blocked(self, domain: str) -> bool:
         """Check if domain should be blocked.
@@ -68,20 +147,22 @@ class DomainFilter:
         domain = domain.lower().rstrip(".")
         if not domain:
             return False
+        # Grab a local reference — atomic, consistent snapshot
+        state = self._state
         # Allowlist takes priority (exact + wildcard + regex)
-        if self._check_set(domain, self._allowed):
+        if self._check_set(domain, state.allowed):
             return False
-        if self._check_wildcards(domain, self._allowed_wildcards):
+        if self._check_wildcards(domain, state.allowed_wildcards):
             return False
-        if self._check_regex(domain, self._allowed_regex):
+        if self._check_regex(domain, state.allowed_regex):
             return False
-        if self._check_set(domain, self._blocked):
+        if self._check_set(domain, state.blocked):
             return True
-        if self._check_wildcards(domain, self._blocked_wildcards):
+        if self._check_wildcards(domain, state.blocked_wildcards):
             return True
-        return self._check_regex(domain, self._blocked_regex)
+        return self._check_regex(domain, state.blocked_regex)
 
-    def _check_set(self, domain: str, domain_set: set[str]) -> bool:
+    def _check_set(self, domain: str, domain_set: frozenset) -> bool:
         """Walk up the domain hierarchy checking against a set."""
         parts = domain.split(".")
         for i in range(len(parts)):
@@ -91,7 +172,7 @@ class DomainFilter:
         return False
 
     @staticmethod
-    def _check_wildcards(domain: str, patterns: list[re.Pattern]) -> bool:
+    def _check_wildcards(domain: str, patterns: tuple) -> bool:
         """Check domain against compiled wildcard patterns."""
         return any(p.match(domain) for p in patterns)
 
@@ -121,29 +202,19 @@ class DomainFilter:
             return None
 
     @staticmethod
-    def _check_regex(domain: str, patterns: list[re.Pattern]) -> bool:
+    def _check_regex(domain: str, patterns: tuple) -> bool:
         """Check domain against compiled regex patterns."""
         return any(p.search(domain) for p in patterns)
 
     def snapshot_base(self) -> None:
         """Save current filter state as the base (before schedule overlays)."""
-        self._base_blocked = set(self._blocked)
-        self._base_allowed = set(self._allowed)
-        self._base_blocked_wildcards = list(self._blocked_wildcards)
-        self._base_allowed_wildcards = list(self._allowed_wildcards)
-        self._base_blocked_regex = list(self._blocked_regex)
-        self._base_allowed_regex = list(self._allowed_regex)
+        self._base_state = self._state
 
     def restore_base(self) -> None:
         """Restore the base filter state, removing any schedule overlay."""
-        if not hasattr(self, "_base_blocked"):
+        if not hasattr(self, "_base_state"):
             return
-        self._blocked = set(self._base_blocked)
-        self._allowed = set(self._base_allowed)
-        self._blocked_wildcards = list(self._base_blocked_wildcards)
-        self._allowed_wildcards = list(self._base_allowed_wildcards)
-        self._blocked_regex = list(self._base_blocked_regex)
-        self._allowed_regex = list(self._base_allowed_regex)
+        self._state = self._base_state
 
     def apply_schedule_overlay(
         self,
@@ -158,12 +229,13 @@ class DomainFilter:
 
     @property
     def blocked_count(self) -> int:
-        return len(self._blocked)
+        return len(self._state.blocked)
 
     @property
     def allowed_count(self) -> int:
-        return len(self._allowed)
+        return len(self._state.allowed)
 
     @property
     def regex_count(self) -> int:
-        return len(self._blocked_regex) + len(self._allowed_regex)
+        state = self._state
+        return len(state.blocked_regex) + len(state.allowed_regex)

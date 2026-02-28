@@ -3,6 +3,7 @@ import logging
 import socket
 import ssl
 import struct
+import threading
 
 import httpx
 from dnslib import DNSRecord, EDNS0
@@ -12,21 +13,27 @@ from coreguard.config import Config
 logger = logging.getLogger("coreguard.upstream")
 
 _doh_client: httpx.Client | None = None
+_doh_lock = threading.Lock()
 
 
 def _get_doh_client(timeout: float = 5.0) -> httpx.Client:
     global _doh_client
-    if _doh_client is None:
-        _doh_client = httpx.Client(http2=True, timeout=timeout)
-    return _doh_client
+    if _doh_client is not None:
+        return _doh_client
+    with _doh_lock:
+        # Double-checked locking
+        if _doh_client is None:
+            _doh_client = httpx.Client(http2=True, timeout=timeout)
+        return _doh_client
 
 
 def close_doh_client() -> None:
     """Close the persistent DoH client."""
     global _doh_client
-    if _doh_client is not None:
-        _doh_client.close()
-        _doh_client = None
+    with _doh_lock:
+        if _doh_client is not None:
+            _doh_client.close()
+            _doh_client = None
 
 
 def resolve_plain(request_data: bytes, server: str, port: int = 53, timeout: float = 5.0) -> bytes:

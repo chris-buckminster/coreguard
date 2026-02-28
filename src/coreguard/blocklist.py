@@ -196,12 +196,14 @@ class _DirectDNSTransport(httpx.HTTPTransport):
 
 
 def _is_ip(hostname: str) -> bool:
-    """Check if a string is an IP address."""
-    try:
-        socket.inet_aton(hostname)
-        return True
-    except OSError:
-        return False
+    """Check if a string is an IPv4 or IPv6 address."""
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(family, hostname)
+            return True
+        except OSError:
+            continue
+    return False
 
 
 def download_list(url: str, timeout: float = 30.0) -> str:
@@ -342,7 +344,7 @@ def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
             all_blocked.update(blocked)
             logger.info("Category %s: %d domains", category, len(blocked))
         # Re-apply after adding category domains
-        domain_filter.load_blocklist(all_blocked - domain_filter._blocked)
+        domain_filter.load_blocklist(all_blocked - domain_filter._state.blocked)
 
     logger.info(
         "Filter loaded: %d blocked domains, %d allowed domains",

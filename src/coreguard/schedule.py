@@ -1,5 +1,6 @@
 """Schedule evaluation for time-based filtering."""
 
+import re
 from datetime import datetime, time
 
 from coreguard.config import Schedule
@@ -7,11 +8,19 @@ from coreguard.config import Schedule
 
 _DAY_MAP = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
 
 def parse_time(s: str) -> time:
-    """Parse an 'HH:MM' string into a time object."""
-    parts = s.strip().split(":")
-    return time(int(parts[0]), int(parts[1]))
+    """Parse an 'HH:MM' string into a time object.
+
+    Raises ValueError if the format is invalid.
+    """
+    s = s.strip()
+    m = _TIME_RE.match(s)
+    if not m:
+        raise ValueError(f"Invalid time format: {s!r} (expected HH:MM, 00:00-23:59)")
+    return time(int(m.group(1)), int(m.group(2)))
 
 
 def is_schedule_active(schedule: Schedule, now: datetime | None = None) -> bool:

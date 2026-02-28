@@ -62,8 +62,8 @@ def _port_53_responding() -> bool:
     """Check if something is responding on 127.0.0.1:53."""
     import socket
 
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(2)
         sock.sendto(
             b"\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
@@ -71,19 +71,24 @@ def _port_53_responding() -> bool:
             ("127.0.0.1", 53),
         )
         sock.recvfrom(512)
-        sock.close()
         return True
     except Exception:
         return False
+    finally:
+        sock.close()
 
 
 def _setup_logging(foreground: bool) -> None:
     """Configure root logger."""
+    from logging.handlers import RotatingFileHandler
+
     log_level = logging.INFO
     handlers: list[logging.Handler] = []
 
-    # Always log to file
-    file_handler = logging.FileHandler(LOG_FILE)
+    # Always log to file (rotating to avoid unbounded growth)
+    file_handler = RotatingFileHandler(
+        LOG_FILE, maxBytes=50 * 1024 * 1024, backupCount=3
+    )
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")
     )
@@ -249,13 +254,8 @@ def start(ctx, foreground):
     write_pid_file()
 
     # Set up signal handlers BEFORE starting DNS server and changing DNS
-    # so we can always clean up if interrupted
-    # (placeholder cleanup_fn — will be replaced after servers start)
-    def early_cleanup():
-        restore_dns()
-        PID_FILE.unlink(missing_ok=True)
-
-    setup_signal_handlers(early_cleanup)
+    # Handlers only set flags — cleanup runs from main thread in main_loop()
+    setup_signal_handlers()
 
     # Start DNS server
     try:
@@ -276,13 +276,20 @@ def start(ctx, foreground):
 
     dashboard_server = start_dashboard(config, stats, cache, domain_filter)
 
+    # Start query database
+    query_db = None
+    try:
+        from coreguard.query_db import QueryDB
+        query_db_path = CONFIG_DIR / "queries.db"
+        query_db = QueryDB(query_db_path, retention_days=config.query_db_retention_days)
+    except Exception as e:
+        logging.getLogger("coreguard.cli").warning("Failed to open query database: %s", e)
+
     # Configure macOS DNS
     set_dns_to_local()
 
-    # Replace signal handlers with full cleanup now that servers are running
-    cleanup_fn = partial(cleanup, udp_server, tcp_server)
-    reload_fn = partial(update_all_lists, config, domain_filter)
-    setup_signal_handlers(cleanup_fn)
+    cleanup_fn = partial(cleanup, udp_server, tcp_server,
+                         dashboard_server=dashboard_server, query_db=query_db)
 
     if foreground:
         if json_mode:
@@ -296,9 +303,9 @@ def start(ctx, foreground):
             if dashboard_server:
                 click.echo(f"Dashboard: http://127.0.0.1:{config.dashboard_port} (token: {config.dashboard_token})")
 
-    # Enter main loop (blocks forever)
+    # Enter main loop (blocks forever, handles shutdown via _shutdown_requested flag)
     try:
-        main_loop(config, domain_filter, stats, cache)
+        main_loop(config, domain_filter, stats, cache, cleanup_fn=cleanup_fn)
     except (KeyboardInterrupt, SystemExit):
         cleanup_fn()
 
@@ -522,8 +529,9 @@ def _add_temp_allow(domain: str, duration_seconds: int) -> None:
             data = json.loads(TEMP_ALLOW_FILE.read_text())
         except (json.JSONDecodeError, OSError):
             data = {}
+    from coreguard.config import _atomic_write
     data[domain] = time.time() + duration_seconds
-    TEMP_ALLOW_FILE.write_text(json.dumps(data))
+    _atomic_write(TEMP_ALLOW_FILE, json.dumps(data).encode())
 
 
 @main.command()

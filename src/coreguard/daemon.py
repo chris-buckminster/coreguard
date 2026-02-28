@@ -18,8 +18,9 @@ from coreguard.upstream import close_doh_client
 
 logger = logging.getLogger("coreguard.daemon")
 
-# Flag set by SIGHUP handler to trigger reload in main loop (signal-safe)
+# Flags set by signal handlers — no I/O in signal context (signal-safe)
 _reload_requested = threading.Event()
+_shutdown_requested = threading.Event()
 
 
 def daemonize() -> None:
@@ -60,16 +61,16 @@ def write_pid_file() -> None:
     atexit.register(lambda: PID_FILE.unlink(missing_ok=True))
 
 
-def setup_signal_handlers(cleanup_fn: callable) -> None:
-    """Set up signal handlers for graceful shutdown and reload."""
+def setup_signal_handlers() -> None:
+    """Set up signal handlers for graceful shutdown and reload.
+
+    Handlers only set flags — cleanup runs from the main thread in main_loop().
+    """
 
     def shutdown_handler(signum, frame):
-        logger.info("Received signal %d, shutting down...", signum)
-        cleanup_fn()
-        sys.exit(0)
+        _shutdown_requested.set()
 
     def reload_handler(signum, frame):
-        # Only set a flag — no I/O in signal context
         _reload_requested.set()
 
     signal.signal(signal.SIGTERM, shutdown_handler)
@@ -77,7 +78,7 @@ def setup_signal_handlers(cleanup_fn: callable) -> None:
     signal.signal(signal.SIGHUP, reload_handler)
 
 
-def cleanup(udp_server, tcp_server) -> None:
+def cleanup(udp_server, tcp_server, dashboard_server=None, query_db=None) -> None:
     """Stop servers, restore DNS, clean up."""
     logger.info("Cleaning up...")
     try:
@@ -85,6 +86,16 @@ def cleanup(udp_server, tcp_server) -> None:
         tcp_server.stop()
     except Exception as e:
         logger.warning("Error stopping servers: %s", e)
+    if dashboard_server:
+        try:
+            dashboard_server.shutdown()
+        except Exception as e:
+            logger.warning("Error stopping dashboard: %s", e)
+    if query_db:
+        try:
+            query_db.close()
+        except Exception as e:
+            logger.warning("Error closing query database: %s", e)
     try:
         restore_dns()
     except Exception as e:
@@ -106,7 +117,8 @@ def _check_temp_expiry(config, domain_filter, cache) -> None:
     pruned = {domain: expires for domain, expires in data.items() if expires > now}
     if len(pruned) < len(data):
         if pruned:
-            TEMP_ALLOW_FILE.write_text(json.dumps(pruned))
+            from coreguard.config import _atomic_write
+            _atomic_write(TEMP_ALLOW_FILE, json.dumps(pruned).encode())
         else:
             TEMP_ALLOW_FILE.unlink(missing_ok=True)
         logger.info("Temp-allow entries expired, reloading filters")
@@ -120,6 +132,7 @@ def main_loop(
     domain_filter: DomainFilter,
     stats: Stats,
     cache=None,
+    cleanup_fn: callable = None,
 ) -> None:
     """Main daemon loop: periodic list updates, stats persistence, health checks."""
     update_interval = config.update_interval_hours * 3600
@@ -150,13 +163,20 @@ def main_loop(
             logger.debug("Initial schedule check failed: %s", e)
 
     while True:
-        time.sleep(60)
+        _shutdown_requested.wait(60)
+
+        # Check for shutdown (signal handler only sets the flag)
+        if _shutdown_requested.is_set():
+            logger.info("Shutdown requested, cleaning up...")
+            if cleanup_fn:
+                cleanup_fn()
+            sys.exit(0)
 
         # Persist stats periodically
         try:
             stats.save(STATS_FILE)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to save stats: %s", e)
 
         # Handle SIGHUP reload (safe — runs in main loop, not signal context)
         if _reload_requested.is_set():

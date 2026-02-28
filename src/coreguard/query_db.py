@@ -32,11 +32,32 @@ class QueryDB:
         self._batch: list[tuple] = []
         self._lock = threading.Lock()
         self._batch_size = 50
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        self._conn = self._open_db(db_path)
+
+    def _open_db(self, db_path: Path) -> sqlite3.Connection:
+        """Open or create the SQLite database, recovering from corruption."""
+        try:
+            conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.executescript(_SCHEMA)
+            conn.commit()
+            return conn
+        except sqlite3.DatabaseError as e:
+            logger.warning("Corrupt database %s: %s — creating fresh DB", db_path, e)
+            # Rename corrupt file to preserve evidence
+            corrupt_suffix = f".corrupt.{int(time.time())}"
+            corrupt_path = db_path.with_suffix(corrupt_suffix)
+            try:
+                db_path.rename(corrupt_path)
+            except OSError:
+                db_path.unlink(missing_ok=True)
+            conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.executescript(_SCHEMA)
+            conn.commit()
+            return conn
 
     def log_query(
         self,
@@ -66,9 +87,9 @@ class QueryDB:
                 self._batch,
             )
             self._conn.commit()
+            self._batch.clear()
         except sqlite3.Error as e:
-            logger.warning("Failed to flush query batch: %s", e)
-        self._batch.clear()
+            logger.warning("Failed to flush query batch (%d entries retained): %s", len(self._batch), e)
 
     def get_recent_queries(
         self,

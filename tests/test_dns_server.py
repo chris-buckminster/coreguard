@@ -355,3 +355,65 @@ class TestDNSSEC:
         self.resolver.resolve(request, None)
         assert self.stats.dnssec_validated == 0
         assert self.stats.dnssec_failed == 1
+
+
+class TestMalformedInput:
+    """Test resolver behavior with malformed or edge-case DNS data."""
+
+    def setup_method(self):
+        self.domain_filter = DomainFilter()
+        self.config = Config()
+        self.stats = Stats()
+        self.query_logger = MagicMock()
+        self.resolver = BlockingResolver(
+            self.domain_filter, self.config, self.stats, self.query_logger
+        )
+
+    @patch("coreguard.dns_server.resolve_upstream")
+    def test_empty_upstream_response(self, mock_upstream):
+        """Empty response bytes should result in SERVFAIL."""
+        mock_upstream.return_value = b""
+        request = _make_request("example.com")
+        response = self.resolver.resolve(request, None)
+        assert response.header.rcode == 2  # SERVFAIL
+        assert self.stats.error_queries == 1
+
+    @patch("coreguard.dns_server.resolve_upstream")
+    def test_truncated_upstream_response(self, mock_upstream):
+        """Truncated DNS response should result in SERVFAIL."""
+        # Only send first 5 bytes of a DNS response — not parseable
+        mock_upstream.return_value = b"\x00\x01\x81\x80\x00"
+        request = _make_request("example.com")
+        response = self.resolver.resolve(request, None)
+        assert response.header.rcode == 2  # SERVFAIL
+
+    @patch("coreguard.dns_server.resolve_upstream")
+    def test_malformed_upstream_response(self, mock_upstream):
+        """Random garbage bytes should result in SERVFAIL."""
+        mock_upstream.return_value = b"\xff\xfe\xfd\xfc\xfb\xfa\xf9\xf8" * 4
+        request = _make_request("example.com")
+        response = self.resolver.resolve(request, None)
+        assert response.header.rcode == 2  # SERVFAIL
+
+    @patch("coreguard.dns_server.resolve_upstream")
+    def test_nxdomain_response(self, mock_upstream):
+        """NXDOMAIN (rcode=3) from upstream should be forwarded as-is."""
+        req = DNSRecord.question("nonexistent.example.com")
+        reply = req.reply()
+        reply.header.rcode = 3  # NXDOMAIN
+        mock_upstream.return_value = reply.pack()
+        request = _make_request("nonexistent.example.com")
+        response = self.resolver.resolve(request, None)
+        assert response.header.rcode == 3
+
+    @patch("coreguard.dns_server.resolve_upstream")
+    def test_no_answer_records(self, mock_upstream):
+        """Response with no answer records should be forwarded."""
+        req = DNSRecord.question("example.com")
+        reply = req.reply()
+        # No answer records added — just header
+        mock_upstream.return_value = reply.pack()
+        request = _make_request("example.com")
+        response = self.resolver.resolve(request, None)
+        assert len(response.rr) == 0
+        assert self.stats.error_queries == 0

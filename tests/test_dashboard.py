@@ -162,7 +162,7 @@ class TestDashboardEndpoints:
 
     def test_cors_header(self):
         _, headers, _ = _get(self.port, "/api/stats")
-        assert headers["Access-Control-Allow-Origin"] == "*"
+        assert "127.0.0.1" in headers["Access-Control-Allow-Origin"]
 
     def test_domains_endpoint(self, tmp_path):
         allow_file = tmp_path / "custom-allow.txt"
@@ -194,9 +194,25 @@ class TestDashboardAuth:
         self.server.shutdown()
         self.server.server_close()
 
-    def test_get_without_auth_works(self):
-        """GET endpoints should work without auth."""
-        status, _, _ = _get(self.port, "/api/stats")
+    def test_get_api_without_auth_returns_401(self):
+        """GET API endpoints should require auth when token is set."""
+        try:
+            _get(self.port, "/api/stats")
+            pytest.fail("Expected HTTP error")
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+
+    def test_get_api_with_auth_works(self):
+        """GET API endpoints should work with valid auth."""
+        url = f"http://127.0.0.1:{self.port}/api/stats"
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", f"Bearer {self.token}")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+
+    def test_html_page_unauthenticated(self):
+        """Root HTML page should be accessible without auth."""
+        status, _, _ = _get(self.port, "/")
         assert status == 200
 
     def test_post_without_auth_fails(self):
@@ -234,6 +250,22 @@ class TestDashboardAuth:
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_oversized_body_returns_413(self):
+        """POST with Content-Length exceeding max size should return 413."""
+        import http.client
+        # Use http.client directly so we can spoof Content-Length without sending full body
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.token}",
+            "Content-Length": str(2_000_000),
+        }
+        # Use an endpoint that calls _read_json_body
+        conn.request("POST", "/api/domains/allow", body=b'{}', headers=headers)
+        resp = conn.getresponse()
+        assert resp.status == 413
+        conn.close()
 
 
 class TestDomainEndpoints:
@@ -1201,12 +1233,233 @@ class TestMetricsEndpoint:
         assert "# TYPE coreguard_queries_total counter" in text
         assert "coreguard_queries_total 1" in text
 
-    def test_no_auth_required(self):
-        """The /metrics endpoint should be accessible without a token."""
+    def test_metrics_requires_auth(self):
+        """The /metrics endpoint should require auth when token is set."""
         server, port = _start_test_server(stats=self.stats, token="secret123")
         try:
-            status, _, _ = _get(port, "/metrics")
+            try:
+                _get(port, "/metrics")
+                pytest.fail("Expected HTTP error")
+            except urllib.error.HTTPError as e:
+                assert e.code == 401
+
+            # With auth, should succeed
+            url = f"http://127.0.0.1:{port}/metrics"
+            req = urllib.request.Request(url)
+            req.add_header("Authorization", "Bearer secret123")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                assert resp.status == 200
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class TestScheduleEndpoints:
+    """Test schedule CRUD via dashboard API."""
+
+    def setup_method(self):
+        self.config = Config()
+        self.config.dashboard_enabled = True
+        self.token = "test-token"
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_schedule_add(self, mock_load, mock_save, mock_sighup):
+        mock_load.return_value = Config()
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/schedules/add", {
+                "name": "work-hours",
+                "start": "09:00",
+                "end": "17:00",
+                "days": ["mon", "tue", "wed"],
+                "block_domains": ["reddit.com"],
+            }, token=self.token)
             assert status == 200
+            assert body["status"] == "ok"
+            assert body["name"] == "work-hours"
+            mock_save.assert_called_once()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_schedule_add_missing_name(self, mock_load, mock_save, mock_sighup):
+        mock_load.return_value = Config()
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/schedules/add", {
+                "start": "09:00",
+                "end": "17:00",
+            }, token=self.token)
+            assert status == 400
+            assert "Missing" in body["error"]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_schedule_add_invalid_time(self, mock_load, mock_save, mock_sighup):
+        mock_load.return_value = Config()
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/schedules/add", {
+                "name": "bad",
+                "start": "25:00",
+                "end": "17:00",
+            }, token=self.token)
+            assert status == 400
+            assert "Invalid time" in body["error"]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_schedule_remove(self, mock_load, mock_save, mock_sighup):
+        from coreguard.config import Schedule
+        cfg = Config()
+        cfg.schedules = [Schedule(name="work-hours", start="09:00", end="17:00")]
+        mock_load.return_value = cfg
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/schedules/remove", {
+                "name": "work-hours",
+            }, token=self.token)
+            assert status == 200
+            assert body["action"] == "removed"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_schedule_remove_not_found(self, mock_load, mock_save, mock_sighup):
+        mock_load.return_value = Config()
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/schedules/remove", {
+                "name": "nonexistent",
+            }, token=self.token)
+            assert status == 404
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_schedule_toggle(self, mock_load, mock_save, mock_sighup):
+        from coreguard.config import Schedule
+        cfg = Config()
+        cfg.schedules = [Schedule(name="work", enabled=True)]
+        mock_load.return_value = cfg
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/schedules/toggle", {
+                "name": "work",
+                "enabled": False,
+            }, token=self.token)
+            assert status == 200
+            assert body["enabled"] is False
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class TestParentalEndpoints:
+    """Test parental control API endpoints."""
+
+    def setup_method(self):
+        self.config = Config()
+        self.config.dashboard_enabled = True
+        self.token = "test-token"
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_parental_enable_safe_search(self, mock_load, mock_save, mock_sighup):
+        mock_load.return_value = Config()
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/parental", {
+                "safe_search_enabled": True,
+            }, token=self.token)
+            assert status == 200
+            assert body["safe_search_enabled"] is True
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_parental_youtube_strict(self, mock_load, mock_save, mock_sighup):
+        mock_load.return_value = Config()
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/parental", {
+                "safe_search_youtube_restrict": "strict",
+            }, token=self.token)
+            assert status == 200
+            assert body["safe_search_youtube_restrict"] == "strict"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_parental_invalid_youtube_mode(self, mock_load, mock_save, mock_sighup):
+        mock_load.return_value = Config()
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/parental", {
+                "safe_search_youtube_restrict": "invalid_mode",
+            }, token=self.token)
+            assert status == 200
+            # Invalid mode should be ignored — stays at default
+            assert body["safe_search_youtube_restrict"] == "moderate"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_parental_content_categories(self, mock_load, mock_save, mock_sighup):
+        mock_load.return_value = Config()
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/parental", {
+                "content_categories": ["adult", "gambling"],
+            }, token=self.token)
+            assert status == 200
+            # Only valid categories should be accepted
+            for cat in body["content_categories"]:
+                assert cat in ("adult", "gambling")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @patch("coreguard.dashboard._send_self_sighup")
+    @patch("coreguard.dashboard.save_config")
+    @patch("coreguard.dashboard.load_config")
+    def test_parental_requires_auth(self, mock_load, mock_save, mock_sighup):
+        mock_load.return_value = Config()
+        server, port = _start_test_server(config=self.config, token=self.token)
+        try:
+            status, _, body = _request(port, "POST", "/api/parental", {
+                "safe_search_enabled": True,
+            })  # No token
+            assert status == 401
         finally:
             server.shutdown()
             server.server_close()

@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from dnslib import DNSRecord
@@ -10,14 +11,18 @@ logger = logging.getLogger("coreguard.cache")
 
 @dataclass(slots=True)
 class _CacheEntry:
-    response: DNSRecord
+    raw_response: bytes  # Packed DNS response (avoids clone-under-lock)
     expires_at: float  # time.monotonic() + ttl
     original_ttl: int
     is_blocked: bool
 
 
 class DNSCache:
-    """Thread-safe, memory-bounded DNS response cache with TTL expiration."""
+    """Thread-safe, memory-bounded DNS response cache with TTL expiration.
+
+    Uses OrderedDict for O(1) LRU eviction and stores raw bytes to
+    avoid expensive DNSRecord clone operations under lock.
+    """
 
     def __init__(
         self,
@@ -26,7 +31,7 @@ class DNSCache:
         min_ttl: int = 0,
     ) -> None:
         self._lock = threading.Lock()
-        self._store: dict[tuple[str, int], _CacheEntry] = {}
+        self._store: OrderedDict[tuple[str, int], _CacheEntry] = OrderedDict()
         self.max_entries = max_entries
         self.max_ttl = max_ttl
         self.min_ttl = min_ttl
@@ -34,7 +39,7 @@ class DNSCache:
     def get(self, domain: str, qtype: int) -> DNSRecord | None:
         """Look up a cached response. Returns None on miss or expiry.
 
-        Returns a clone with TTLs adjusted to reflect remaining time.
+        Returns a parsed copy with TTLs adjusted to reflect remaining time.
         """
         key = (domain.lower().rstrip("."), qtype)
         now = time.monotonic()
@@ -45,12 +50,16 @@ class DNSCache:
             if now >= entry.expires_at:
                 del self._store[key]
                 return None
-            # Clone so callers don't mutate the cached copy
-            response = DNSRecord.parse(entry.response.pack())
+            raw = entry.raw_response
             remaining = max(1, int(entry.expires_at - now))
-            for rr in response.rr + response.auth + response.ar:
-                rr.ttl = remaining
-            return response
+            # Move to end (most recently used) for LRU
+            self._store.move_to_end(key)
+
+        # Parse outside the lock — no contention on the expensive operation
+        response = DNSRecord.parse(raw)
+        for rr in response.rr + response.auth + response.ar:
+            rr.ttl = remaining
+        return response
 
     def put(
         self,
@@ -67,16 +76,18 @@ class DNSCache:
 
         key = (domain.lower().rstrip("."), qtype)
         now = time.monotonic()
+        raw = response.pack()  # Pack outside lock
         entry = _CacheEntry(
-            response=DNSRecord.parse(response.pack()),  # defensive copy
+            raw_response=raw,
             expires_at=now + ttl,
             original_ttl=ttl,
             is_blocked=is_blocked,
         )
         with self._lock:
             self._store[key] = entry
+            self._store.move_to_end(key)
             if len(self._store) > self.max_entries:
-                self._evict_one()
+                self._store.popitem(last=False)  # O(1) LRU eviction
 
     def sweep_expired(self) -> int:
         """Remove all expired entries. Returns count removed."""
@@ -109,10 +120,3 @@ class DNSCache:
             if rr.rtype == 6:  # SOA
                 return rr.ttl
         return 0
-
-    def _evict_one(self) -> None:
-        """Evict the entry closest to expiration. Must hold self._lock."""
-        if not self._store:
-            return
-        victim = min(self._store, key=lambda k: self._store[k].expires_at)
-        del self._store[victim]

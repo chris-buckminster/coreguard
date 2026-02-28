@@ -1,7 +1,9 @@
 """Tests for SQLite-backed query logging."""
 
+import sqlite3
 import time
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -228,4 +230,136 @@ class TestQueryDBImport:
         db = QueryDB(tmp_path / "q.db")
         count = db.import_from_log(tmp_path / "nonexistent.log")
         assert count == 0
+        db.close()
+
+
+class TestQueryDBFlushRetention:
+    def test_batch_retained_on_write_failure(self, tmp_path):
+        """If executemany fails, the batch should be retained for retry."""
+        db = QueryDB(tmp_path / "q.db")
+        db.log_query("a.com", "A", blocked=False)
+        db.log_query("b.com", "A", blocked=True)
+
+        # Replace the connection with a mock that raises on executemany
+        real_conn = db._conn
+        mock_conn = MagicMock()
+        mock_conn.executemany.side_effect = sqlite3.OperationalError("disk full")
+        db._conn = mock_conn
+        db.flush()
+
+        # Batch should still have the entries
+        assert len(db._batch) == 2
+
+        # Restore real connection and verify retry works
+        db._conn = real_conn
+        db.flush()
+        assert len(db._batch) == 0
+        assert db.get_total_count() == 2
+        db.close()
+
+    def test_batch_cleared_on_success(self, tmp_path):
+        """Batch should be cleared after successful flush."""
+        db = QueryDB(tmp_path / "q.db")
+        db.log_query("a.com", "A", blocked=False)
+        db.flush()
+        assert len(db._batch) == 0
+        db.close()
+
+
+class TestQueryDBCorruptRecovery:
+    def test_corrupt_db_creates_fresh(self, tmp_path):
+        """A corrupt database file should be renamed and a fresh DB created."""
+        db_path = tmp_path / "queries.db"
+        db_path.write_bytes(b"this is not a valid sqlite database")
+
+        db = QueryDB(db_path)
+        # Should be able to use the fresh DB
+        db.log_query("test.com", "A", blocked=False)
+        db.flush()
+        rows, total = db.get_recent_queries(10)
+        assert total == 1
+
+        # Corrupt file should have been renamed
+        corrupt_files = list(tmp_path.glob("*.corrupt.*"))
+        assert len(corrupt_files) == 1
+        db.close()
+
+    def test_valid_db_works_normally(self, tmp_path):
+        """A valid existing database should be opened normally."""
+        db_path = tmp_path / "queries.db"
+        # Create a valid DB first
+        db1 = QueryDB(db_path)
+        db1.log_query("existing.com", "A", blocked=False)
+        db1.flush()
+        db1.close()
+
+        # Re-open should find the existing data
+        db2 = QueryDB(db_path)
+        rows, total = db2.get_recent_queries(10)
+        assert total == 1
+        assert rows[0]["domain"] == "existing.com"
+        db2.close()
+
+
+class TestQueryDBConcurrency:
+    def test_concurrent_log_and_flush(self, tmp_path):
+        """Multiple threads logging and flushing should not corrupt data."""
+        import threading
+
+        db = QueryDB(tmp_path / "q.db")
+        db._batch_size = 10
+        errors = []
+
+        def writer(n):
+            try:
+                for i in range(50):
+                    db.log_query(f"t{n}-{i}.com", "A", blocked=(i % 2 == 0))
+                    if i % 20 == 0:
+                        db.flush()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=writer, args=(n,)) for n in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        db.flush()
+        assert not errors
+        total = db.get_total_count()
+        assert total == 250  # 5 threads * 50 queries
+        db.close()
+
+    def test_concurrent_log_and_read(self, tmp_path):
+        """Reading while writing should not cause errors."""
+        import threading
+
+        db = QueryDB(tmp_path / "q.db")
+        errors = []
+
+        def writer():
+            try:
+                for i in range(100):
+                    db.log_query(f"w{i}.com", "A", blocked=False)
+                db.flush()
+            except Exception as e:
+                errors.append(e)
+
+        def reader():
+            try:
+                for _ in range(20):
+                    db.get_recent_queries(10)
+                    db.get_total_count()
+            except Exception as e:
+                errors.append(e)
+
+        wt = threading.Thread(target=writer)
+        rt = threading.Thread(target=reader)
+        wt.start()
+        rt.start()
+        wt.join()
+        rt.join()
+
+        assert not errors
         db.close()

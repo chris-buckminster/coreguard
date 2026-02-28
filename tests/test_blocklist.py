@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 
 from coreguard.blocklist import (
+    _is_ip,
     detect_and_parse,
     load_temp_allow_list,
     parse_adblock_list,
@@ -162,3 +163,29 @@ class TestLoadTempAllowList:
         f.write_text("not valid json{{{")
         result = load_temp_allow_list(f)
         assert result == set()
+
+
+class TestIsIp:
+    def test_ipv4(self):
+        assert _is_ip("1.2.3.4") is True
+
+    def test_ipv4_localhost(self):
+        assert _is_ip("127.0.0.1") is True
+
+    def test_ipv6_full(self):
+        assert _is_ip("2001:0db8:85a3:0000:0000:8a2e:0370:7334") is True
+
+    def test_ipv6_compressed(self):
+        assert _is_ip("::1") is True
+
+    def test_ipv6_mapped_v4(self):
+        assert _is_ip("::ffff:192.168.1.1") is True
+
+    def test_domain_not_ip(self):
+        assert _is_ip("example.com") is False
+
+    def test_empty_not_ip(self):
+        assert _is_ip("") is False
+
+    def test_partial_not_ip(self):
+        assert _is_ip("1.2.3") is False

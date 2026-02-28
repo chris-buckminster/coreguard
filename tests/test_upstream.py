@@ -1,9 +1,12 @@
+import threading
 from unittest.mock import patch, MagicMock
 
 from dnslib import DNSRecord, QTYPE, RR, A, EDNS0
 
 from coreguard.config import Config, UpstreamProvider
 from coreguard.upstream import (
+    _get_doh_client,
+    close_doh_client,
     resolve_upstream,
     prepare_dnssec_request,
     check_dnssec_response,
@@ -218,3 +221,29 @@ class TestDoQ:
 
         with pytest.raises(Exception, match="Plain down"):
             resolve_upstream(b"\x00", config)
+
+
+class TestDoHClientLocking:
+    def test_concurrent_get_creates_single_client(self):
+        """Multiple concurrent calls to _get_doh_client should create only one client."""
+        close_doh_client()  # Ensure clean state
+        clients = []
+        errors = []
+
+        def get_client():
+            try:
+                client = _get_doh_client(timeout=5.0)
+                clients.append(id(client))
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=get_client) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        # All threads should have gotten the same client instance
+        assert len(set(clients)) == 1
+        close_doh_client()  # Clean up

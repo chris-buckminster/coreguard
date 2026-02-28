@@ -1,4 +1,6 @@
-from coreguard.config import Config, Schedule, UpstreamProvider, _config_to_dict, _dict_to_config, load_config, save_config
+from unittest.mock import patch
+
+from coreguard.config import Config, Schedule, UpstreamProvider, _atomic_write, _config_to_dict, _dict_to_config, load_config, save_config
 
 
 class TestConfig:
@@ -198,3 +200,84 @@ class TestConfig:
         config = _dict_to_config(data)
         assert config.dnssec_enabled is False
         assert config.dnssec_strict is False
+
+
+class TestAtomicWrite:
+    def test_write_creates_file(self, tmp_path):
+        path = tmp_path / "test.txt"
+        _atomic_write(path, b"hello world")
+        assert path.read_bytes() == b"hello world"
+
+    def test_write_overwrites_existing(self, tmp_path):
+        path = tmp_path / "test.txt"
+        path.write_bytes(b"old content")
+        _atomic_write(path, b"new content")
+        assert path.read_bytes() == b"new content"
+
+    def test_original_survives_write_failure(self, tmp_path):
+        """If the write fails, the original file should be preserved."""
+        path = tmp_path / "test.txt"
+        path.write_bytes(b"original")
+
+        with patch("coreguard.config.os.write", side_effect=OSError("disk full")):
+            try:
+                _atomic_write(path, b"new content")
+            except OSError:
+                pass
+
+        assert path.read_bytes() == b"original"
+
+    def test_no_temp_file_left_on_failure(self, tmp_path):
+        """Temp file should be cleaned up on failure."""
+        path = tmp_path / "test.txt"
+        import os
+        before = set(os.listdir(tmp_path))
+
+        with patch("coreguard.config.os.write", side_effect=OSError("disk full")):
+            try:
+                _atomic_write(path, b"data")
+            except OSError:
+                pass
+
+        after = set(os.listdir(tmp_path))
+        assert before == after
+
+
+class TestCorruptConfig:
+    def test_corrupt_toml_returns_defaults(self, tmp_path):
+        """Corrupt config file should return defaults and rewrite config."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("this is not valid toml [[[")
+
+        with patch("coreguard.config.CONFIG_FILE", config_file), \
+             patch("coreguard.config.CONFIG_DIR", tmp_path), \
+             patch("coreguard.config.BLOCKLISTS_DIR", tmp_path / "blocklists"), \
+             patch("coreguard.config.CUSTOM_ALLOW_FILE", tmp_path / "allow.txt"), \
+             patch("coreguard.config.CUSTOM_BLOCK_FILE", tmp_path / "block.txt"):
+            config = load_config()
+
+        # Should get defaults
+        assert config.upstream_mode == "doh"
+        assert config.listen_port == 53
+        # Config file should have been rewritten with defaults
+        assert config_file.exists()
+        content = config_file.read_text()
+        assert "doh" in content
+
+
+class TestSaveConfigRoundTrip:
+    def test_save_and_load(self, tmp_path):
+        """save_config and load_config should round-trip correctly."""
+        config = Config()
+        config.dashboard_token = "test-token-123"
+
+        config_file = tmp_path / "config.toml"
+        with patch("coreguard.config.CONFIG_FILE", config_file), \
+             patch("coreguard.config.CONFIG_DIR", tmp_path), \
+             patch("coreguard.config.BLOCKLISTS_DIR", tmp_path / "blocklists"), \
+             patch("coreguard.config.CUSTOM_ALLOW_FILE", tmp_path / "allow.txt"), \
+             patch("coreguard.config.CUSTOM_BLOCK_FILE", tmp_path / "block.txt"):
+            save_config(config)
+            loaded = load_config()
+            assert loaded.dashboard_token == "test-token-123"
+            assert loaded.upstream_mode == "doh"

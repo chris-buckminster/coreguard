@@ -212,3 +212,36 @@ class TestScheduleOverlay:
         self.f.restore_base()
         assert self.f.is_blocked("overlay.com") is False
         assert self.f.is_blocked("base.com") is True
+
+
+class TestConcurrency:
+    def test_concurrent_reads_during_mutation(self):
+        """Multiple threads calling is_blocked() while main thread mutates should not crash."""
+        import threading
+
+        f = DomainFilter()
+        f.load_blocklist([f"d{i}.com" for i in range(1000)])
+        errors = []
+
+        def reader():
+            try:
+                for _ in range(200):
+                    f.is_blocked("d500.com")
+                    f.is_blocked("unknown.com")
+                    f.is_blocked("sub.d100.com")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=reader) for _ in range(5)]
+        for t in threads:
+            t.start()
+
+        # Mutate while readers are running
+        for i in range(50):
+            f.clear()
+            f.load_blocklist([f"new{i}-{j}.com" for j in range(100)])
+
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent access errors: {errors}"

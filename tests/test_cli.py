@@ -709,3 +709,33 @@ class TestParentalCLI:
         result = self.runner.invoke(main, ["parental", "categories", "--add", "invalid"])
         assert result.exit_code != 0
         assert "Unknown category" in result.output
+
+
+class TestPort53Responding:
+    def test_socket_closed_on_exception(self):
+        """Socket should be closed even when an exception occurs."""
+        from unittest.mock import MagicMock
+
+        mock_sock = MagicMock()
+        mock_sock.recvfrom.side_effect = OSError("Connection refused")
+
+        with patch("socket.socket", return_value=mock_sock):
+            from coreguard.cli import _port_53_responding
+            result = _port_53_responding()
+
+        assert result is False
+        mock_sock.close.assert_called_once()
+
+    def test_socket_closed_on_success(self):
+        """Socket should be closed after successful response."""
+        from unittest.mock import MagicMock
+
+        mock_sock = MagicMock()
+        mock_sock.recvfrom.return_value = (b"\x00" * 12, ("127.0.0.1", 53))
+
+        with patch("socket.socket", return_value=mock_sock):
+            from coreguard.cli import _port_53_responding
+            result = _port_53_responding()
+
+        assert result is True
+        mock_sock.close.assert_called_once()

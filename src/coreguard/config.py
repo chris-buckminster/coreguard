@@ -1,4 +1,7 @@
+import logging
+import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -9,6 +12,8 @@ if sys.version_info >= (3, 11):
     import tomllib
 else:
     import tomli as tomllib
+
+logger = logging.getLogger("coreguard.config")
 
 CONFIG_DIR = Path("/usr/local/etc/coreguard")
 PID_FILE = CONFIG_DIR / "coreguard.pid"
@@ -319,7 +324,13 @@ def load_config() -> Config:
         config = Config()
         save_config(config)
         return config
-    data = tomllib.loads(CONFIG_FILE.read_text())
+    try:
+        data = tomllib.loads(CONFIG_FILE.read_text())
+    except Exception as e:
+        logger.warning("Corrupt config file: %s — using defaults and rewriting", e)
+        config = Config()
+        save_config(config)
+        return config
     config = _dict_to_config(data)
 
     # Auto-migrate old config format to current format
@@ -330,7 +341,33 @@ def load_config() -> Config:
     return config
 
 
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write data to a file atomically via tempfile + rename.
+
+    Writes to a temp file in the same directory, fsyncs, then renames
+    over the original. This prevents data loss on crash or disk full.
+    """
+    fd = None
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        os.write(fd, data)
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 def save_config(config: Config) -> None:
     """Save config to disk."""
     ensure_dirs()
-    CONFIG_FILE.write_bytes(tomli_w.dumps(_config_to_dict(config)).encode())
+    _atomic_write(CONFIG_FILE, tomli_w.dumps(_config_to_dict(config)).encode())

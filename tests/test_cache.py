@@ -77,6 +77,23 @@ class TestDNSCache:
             cache.put(f"d{i}.com", QTYPE.A, resp)
         assert cache.size == 5
 
+    def test_lru_eviction_order(self):
+        """Least-recently-used entries should be evicted first."""
+        cache = DNSCache(max_entries=3)
+        for i in range(3):
+            cache.put(f"d{i}.com", QTYPE.A, _make_response(domain=f"d{i}.com"))
+
+        # Access d0 to make it recently used
+        cache.get("d0.com", QTYPE.A)
+
+        # Add a 4th entry — d1 should be evicted (oldest untouched)
+        cache.put("d3.com", QTYPE.A, _make_response(domain="d3.com"))
+        assert cache.size == 3
+        assert cache.get("d0.com", QTYPE.A) is not None  # accessed, kept
+        assert cache.get("d1.com", QTYPE.A) is None       # evicted
+        assert cache.get("d2.com", QTYPE.A) is not None  # kept
+        assert cache.get("d3.com", QTYPE.A) is not None  # just added
+
     def test_sweep_expired(self):
         base_time = 1000.0
         with patch("coreguard.cache.time.monotonic", return_value=base_time):

@@ -349,7 +349,7 @@ The dashboard supports **dark and light themes** (toggle in the header, or auto-
 
 #### Authentication
 
-All read-only views (stats, queries, config) work without authentication. Mutating actions (adding domains, toggling lists, stopping the daemon) require a token. This prevents other apps or malicious websites from silently modifying your configuration.
+All API endpoints (stats, queries, config, and mutating actions) require a token. The only unauthenticated page is the login form itself. This prevents other apps or malicious websites from reading your data or modifying your configuration.
 
 A token is auto-generated on first start and saved to `config.toml`. To retrieve it:
 
@@ -378,11 +378,11 @@ port = 8080
 
 ### Prometheus Metrics
 
-When the dashboard is enabled, a Prometheus-compatible metrics endpoint is available at `http://127.0.0.1:8080/metrics`. No authentication is required.
+When the dashboard is enabled, a Prometheus-compatible metrics endpoint is available at `http://127.0.0.1:8080/metrics`. Authentication is required (same token as the dashboard).
 
 ```bash
-# Scrape metrics
-curl http://127.0.0.1:8080/metrics
+# Scrape metrics (token required)
+curl -H "Authorization: Bearer YOUR_TOKEN" http://127.0.0.1:8080/metrics
 ```
 
 Exported metrics:
@@ -408,6 +408,8 @@ Add the scrape target to your `prometheus.yml`:
 ```yaml
 scrape_configs:
   - job_name: coreguard
+    authorization:
+      credentials: "YOUR_DASHBOARD_TOKEN"
     static_configs:
       - targets: ["127.0.0.1:8080"]
 ```

@@ -22,6 +22,7 @@ from coreguard.config import (
     LOG_FILE,
     TEMP_ALLOW_FILE,
     Config,
+    _atomic_write,
     load_config,
     save_config,
 )
@@ -67,13 +68,17 @@ def _validate_domain(domain: str) -> str | None:
 
 
 def _remove_from_file(path: Path, domain: str) -> bool:
-    """Remove a domain from a text file. Returns True if found and removed."""
+    """Remove a domain from a text file. Returns True if found and removed.
+
+    Caller should hold _file_lock when calling from a request handler.
+    """
     if not path.exists():
         return False
     lines = path.read_text().splitlines()
     filtered = [l for l in lines if l.strip().lower().strip(".") != domain]
     if len(filtered) < len(lines):
-        path.write_text("\n".join(filtered) + "\n" if filtered else "")
+        data = ("\n".join(filtered) + "\n" if filtered else "").encode()
+        _atomic_write(path, data)
         return True
     return False
 
@@ -87,6 +92,8 @@ def _parse_duration(s: str) -> int | None:
 
 
 _history_cache: dict = {"data": None, "timestamp": 0}
+_history_lock = threading.Lock()
+_file_lock = threading.Lock()
 
 _QUERY_LOG_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?(BLOCKED|ALLOWED)\s+\S+\s+\S+"
@@ -99,6 +106,12 @@ def _read_query_history() -> list[dict]:
     Returns a list of 144 dicts with keys: time, allowed, blocked.
     Uses a 60-second cache to avoid re-parsing on every request.
     """
+    with _history_lock:
+        return _read_query_history_locked()
+
+
+def _read_query_history_locked() -> list[dict]:
+    """Inner implementation of _read_query_history (caller must hold _history_lock)."""
     now = time.time()
     if _history_cache["data"] is not None and now - _history_cache["timestamp"] < 60:
         return _history_cache["data"]
@@ -253,25 +266,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         if path == "/":
+            # HTML page is unauthenticated so the login form renders
             self._serve_html()
-        elif path == "/api/stats":
-            self._serve_stats()
-        elif path == "/api/queries":
-            self._serve_queries(params)
-        elif path == "/api/queries/export":
-            self._serve_export(params)
-        elif path == "/api/config":
-            self._serve_config()
-        elif path == "/api/domains":
-            self._serve_domains()
-        elif path == "/api/history":
-            self._serve_history()
-        elif path == "/api/clients":
-            self._serve_clients()
         elif path == "/api/stream":
+            # SSE checks auth via header or query param (EventSource can't set headers)
+            if not self._check_auth_or_query(params):
+                return
             self._serve_sse()
-        elif path == "/metrics":
-            self._serve_metrics()
+        elif path in (
+            "/api/stats", "/api/queries", "/api/queries/export",
+            "/api/config", "/api/domains", "/api/history",
+            "/api/clients", "/metrics",
+        ):
+            if not self._check_auth():
+                return
+            if path == "/api/stats":
+                self._serve_stats()
+            elif path == "/api/queries":
+                self._serve_queries(params)
+            elif path == "/api/queries/export":
+                self._serve_export(params)
+            elif path == "/api/config":
+                self._serve_config()
+            elif path == "/api/domains":
+                self._serve_domains()
+            elif path == "/api/history":
+                self._serve_history()
+            elif path == "/api/clients":
+                self._serve_clients()
+            elif path == "/metrics":
+                self._serve_metrics()
         else:
             self.send_error(404)
 
@@ -317,9 +341,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def _cors_origin(self) -> str:
+        """Return the allowed CORS origin based on the dashboard port."""
+        port = self.config.dashboard_port if self.config else 8080
+        return f"http://127.0.0.1:{port}"
+
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Max-Age", "86400")
@@ -339,10 +368,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json_response({"error": "Unauthorized"}, status=401)
         return False
 
+    def _check_auth_or_query(self, params: dict) -> bool:
+        """Verify token via header or query param. For SSE (EventSource can't set headers)."""
+        if not self.token:
+            return True
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            if hmac.compare_digest(auth[7:], self.token):
+                return True
+        query_token = params.get("token", [None])[0]
+        if query_token and hmac.compare_digest(query_token, self.token):
+            return True
+        self._json_response({"error": "Unauthorized"}, status=401)
+        return False
+
+    _MAX_BODY_SIZE = 1_048_576  # 1 MB
+
     def _read_json_body(self) -> dict | None:
-        """Read and parse JSON request body. Returns None and sends 400 on failure."""
+        """Read and parse JSON request body. Returns None and sends 400/413 on failure."""
         try:
             length = int(self.headers.get("Content-Length", 0))
+            if length > self._MAX_BODY_SIZE:
+                self._json_response({"error": "Request body too large"}, status=413)
+                return None
             raw = self.rfile.read(length) if length > 0 else b"{}"
             return json.loads(raw)
         except (json.JSONDecodeError, ValueError):
@@ -356,7 +404,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
         self.end_headers()
         self.wfile.write(body)
 
@@ -525,7 +573,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
         self.end_headers()
 
         try:
@@ -589,8 +637,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except re.error as e:
                 self._json_response({"error": f"Invalid regex: {e}"}, status=400)
                 return
-            with open(CUSTOM_ALLOW_FILE, "a") as f:
-                f.write(f"regex:{pattern}\n")
+            with _file_lock:
+                with open(CUSTOM_ALLOW_FILE, "a") as f:
+                    f.write(f"regex:{pattern}\n")
             _send_self_sighup()
             self._json_response({"status": "ok", "pattern": pattern, "type": "regex"})
         else:
@@ -598,8 +647,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not domain:
                 self._json_response({"error": "Invalid domain"}, status=400)
                 return
-            with open(CUSTOM_ALLOW_FILE, "a") as f:
-                f.write(domain + "\n")
+            with _file_lock:
+                with open(CUSTOM_ALLOW_FILE, "a") as f:
+                    f.write(domain + "\n")
             _send_self_sighup()
             self._json_response({"status": "ok", "domain": domain})
 
@@ -620,8 +670,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except re.error as e:
                 self._json_response({"error": f"Invalid regex: {e}"}, status=400)
                 return
-            with open(CUSTOM_BLOCK_FILE, "a") as f:
-                f.write(f"regex:{pattern}\n")
+            with _file_lock:
+                with open(CUSTOM_BLOCK_FILE, "a") as f:
+                    f.write(f"regex:{pattern}\n")
             _send_self_sighup()
             self._json_response({"status": "ok", "pattern": pattern, "type": "regex"})
         else:
@@ -629,8 +680,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not domain:
                 self._json_response({"error": "Invalid domain"}, status=400)
                 return
-            with open(CUSTOM_BLOCK_FILE, "a") as f:
-                f.write(domain + "\n")
+            with _file_lock:
+                with open(CUSTOM_BLOCK_FILE, "a") as f:
+                    f.write(domain + "\n")
             _send_self_sighup()
             self._json_response({"status": "ok", "domain": domain})
 
@@ -655,27 +707,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
                 return
             # Temp unblock
-            data = {}
-            if TEMP_ALLOW_FILE.exists():
-                try:
-                    data = json.loads(TEMP_ALLOW_FILE.read_text())
-                except (json.JSONDecodeError, OSError):
-                    data = {}
-            data[domain] = time.time() + seconds
-            TEMP_ALLOW_FILE.write_text(json.dumps(data))
+            with _file_lock:
+                data = {}
+                if TEMP_ALLOW_FILE.exists():
+                    try:
+                        data = json.loads(TEMP_ALLOW_FILE.read_text())
+                    except (json.JSONDecodeError, OSError):
+                        data = {}
+                data[domain] = time.time() + seconds
+                _atomic_write(TEMP_ALLOW_FILE, json.dumps(data).encode())
         else:
             # Permanent unblock: remove from block file, add to allow file
-            _remove_from_file(CUSTOM_BLOCK_FILE, domain)
-            existing = set()
-            if CUSTOM_ALLOW_FILE.exists():
-                existing = {
-                    line.strip().lower().strip(".")
-                    for line in CUSTOM_ALLOW_FILE.read_text().splitlines()
-                    if line.strip() and not line.strip().startswith("#")
-                }
-            if domain not in existing:
-                with open(CUSTOM_ALLOW_FILE, "a") as f:
-                    f.write(domain + "\n")
+            with _file_lock:
+                _remove_from_file(CUSTOM_BLOCK_FILE, domain)
+                existing = set()
+                if CUSTOM_ALLOW_FILE.exists():
+                    existing = {
+                        line.strip().lower().strip(".")
+                        for line in CUSTOM_ALLOW_FILE.read_text().splitlines()
+                        if line.strip() and not line.strip().startswith("#")
+                    }
+                if domain not in existing:
+                    with open(CUSTOM_ALLOW_FILE, "a") as f:
+                        f.write(domain + "\n")
 
         _send_self_sighup()
         self._json_response({"status": "ok", "domain": domain})
@@ -690,7 +744,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not domain:
             self._json_response({"error": "Invalid domain"}, status=400)
             return
-        removed = _remove_from_file(CUSTOM_ALLOW_FILE, domain)
+        with _file_lock:
+            removed = _remove_from_file(CUSTOM_ALLOW_FILE, domain)
         if not removed:
             self._json_response({"error": "Domain not found in allowlist"}, status=404)
             return
@@ -707,7 +762,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not domain:
             self._json_response({"error": "Invalid domain"}, status=400)
             return
-        removed = _remove_from_file(CUSTOM_BLOCK_FILE, domain)
+        with _file_lock:
+            removed = _remove_from_file(CUSTOM_BLOCK_FILE, domain)
         if not removed:
             self._json_response(
                 {"error": "Domain not found in blocklist"}, status=404
@@ -817,11 +873,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._check_auth():
             return
         self._json_response({"status": "ok", "message": "Daemon stopping"})
-
-        def _delayed_stop():
-            time.sleep(0.5)
-            os.kill(os.getpid(), signal.SIGTERM)
-
         threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
 
     def _handle_parental(self) -> None:
@@ -977,10 +1028,16 @@ def _read_recent_queries(
 
     Returns (entries, total_matching_count).
     """
+    _MAX_LOG_READ = 5 * 1024 * 1024  # 5 MB
+
     if not LOG_FILE.exists():
         return [], 0
     try:
+        file_size = LOG_FILE.stat().st_size
         with open(LOG_FILE, "r") as f:
+            if file_size > _MAX_LOG_READ:
+                f.seek(file_size - _MAX_LOG_READ)
+                f.readline()  # Discard partial first line
             lines = f.readlines()
     except OSError:
         return [], 0
@@ -2122,7 +2179,7 @@ async function refreshStats() {
   if (statsInFlight) return;
   statsInFlight = true;
   try {
-    const stats = await fetch('/api/stats').then(r => r.json());
+    const stats = await api('GET', '/api/stats');
 
     // Animate stat values
     const fields = [
@@ -2195,7 +2252,7 @@ async function fetchQueries(extra) {
     if (timeFilterStart) url += '&start=' + encodeURIComponent(timeFilterStart);
     if (timeFilterEnd) url += '&end=' + encodeURIComponent(timeFilterEnd);
     if (extra && extra.client) url += '&client=' + encodeURIComponent(extra.client);
-    const data = await fetch(url).then(r => r.json());
+    const data = await api('GET', url);
     queriesData = data.queries || [];
     queryTotal = data.total || 0;
     queryHasMore = data.has_more || false;
@@ -2249,7 +2306,7 @@ function renderDomainEntry(d, type) {
 
 async function refreshDomains() {
   try {
-    const data = await fetch('/api/domains').then(r => r.json());
+    const data = await api('GET', '/api/domains');
     const al = data.allowlist || [];
     const bl = data.blocklist || [];
     const tl = data.temp_allowlist || [];
@@ -2317,7 +2374,7 @@ async function tempUnblock() {
 // --- Lists ---
 async function refreshLists() {
   try {
-    const data = await fetch('/api/config').then(r => r.json());
+    const data = await api('GET', '/api/config');
     const lists = data.filter_lists || [];
     document.getElementById('lists-table').innerHTML = lists.map(l =>
       '<tr><td>'+esc(l.name)+'</td><td><label class="toggle"><input type="checkbox" '+(l.enabled?'checked':'')+' onchange="toggleList(&#39;'+esc(l.name)+'&#39;,this.checked)"><span class="slider"></span></label></td><td><button class="btn btn-sm" onclick="removeList(&#39;'+esc(l.name)+'&#39;)">Remove</button></td></tr>'
@@ -2364,7 +2421,7 @@ async function triggerUpdate() {
 // --- Schedules ---
 async function refreshSchedules() {
   try {
-    const data = await fetch('/api/config').then(r => r.json());
+    const data = await api('GET', '/api/config');
     const schedules = data.schedules || [];
     document.getElementById('sched-count').textContent = schedules.length;
 
@@ -2441,7 +2498,7 @@ async function toggleSchedule(name, enabled) {
 // --- Parental Controls ---
 async function refreshParental() {
   try {
-    const data = await fetch('/api/config').then(r => r.json());
+    const data = await api('GET', '/api/config');
     const p = data.parental || {};
     document.getElementById('safesearch-toggle').checked = !!p.safe_search_enabled;
     document.getElementById('yt-restrict').value = p.safe_search_youtube_restrict || 'moderate';
@@ -2479,7 +2536,7 @@ async function toggleCategory() {
 
 async function refreshSettings() {
   try {
-    const data = await fetch('/api/config').then(r => r.json());
+    const data = await api('GET', '/api/config');
     const rows = [
       ['Upstream Mode', data.upstream_mode],
       ['Providers', (data.providers||[]).join(', ')],
@@ -2642,7 +2699,7 @@ function setupChartInteraction() {
 
 async function refreshHistory() {
   try {
-    const data = await fetch('/api/history').then(r => r.json());
+    const data = await api('GET', '/api/history');
     historyData = data.buckets || [];
     drawHistoryChart();
   } catch(e) { console.error('History refresh failed:', e); }
@@ -2653,7 +2710,7 @@ window.addEventListener('resize', drawHistoryChart);
 // --- Server-Sent Events ---
 function connectSSE() {
   try {
-    const es = new EventSource('/api/stream');
+    const es = new EventSource('/api/stream' + (token ? '?token=' + encodeURIComponent(token) : ''));
     es.onopen = function() {
       sseConnected = true;
       document.getElementById('live-badge').style.display = '';

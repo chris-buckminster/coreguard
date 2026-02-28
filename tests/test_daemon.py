@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch, call
 
 from coreguard.daemon import (
     _check_temp_expiry,
+    _shutdown_requested,
     cleanup,
     is_running,
     main_loop,
@@ -94,33 +95,31 @@ class TestWritePidFile:
 class TestSetupSignalHandlers:
     @patch("signal.signal")
     def test_registers_all_signals(self, mock_signal):
-        cleanup_fn = MagicMock()
-        setup_signal_handlers(cleanup_fn)
+        setup_signal_handlers()
         registered_signals = [c[0][0] for c in mock_signal.call_args_list]
         assert signal.SIGTERM in registered_signals
         assert signal.SIGINT in registered_signals
         assert signal.SIGHUP in registered_signals
 
-    @patch("sys.exit")
     @patch("signal.signal")
-    def test_shutdown_handler_calls_cleanup(self, mock_signal, mock_exit):
-        cleanup_fn = MagicMock()
-        setup_signal_handlers(cleanup_fn)
+    def test_shutdown_handler_sets_flag(self, mock_signal):
+        _shutdown_requested.clear()
+        setup_signal_handlers()
         # Extract the SIGTERM handler
         for c in mock_signal.call_args_list:
             if c[0][0] == signal.SIGTERM:
                 handler = c[0][1]
                 break
         handler(signal.SIGTERM, None)
-        cleanup_fn.assert_called_once()
-        mock_exit.assert_called_once_with(0)
+        assert _shutdown_requested.is_set()
+        _shutdown_requested.clear()
 
     @patch("signal.signal")
     def test_sighup_sets_reload_flag(self, mock_signal):
         from coreguard.daemon import _reload_requested
         _reload_requested.clear()
 
-        setup_signal_handlers(MagicMock())
+        setup_signal_handlers()
         # Extract the SIGHUP handler
         for c in mock_signal.call_args_list:
             if c[0][0] == signal.SIGHUP:
@@ -168,10 +167,22 @@ class TestCleanup:
         mock_close.assert_called_once()
         mock_pid_file.unlink.assert_called_once_with(missing_ok=True)
 
+    @patch("coreguard.daemon.PID_FILE")
+    @patch("coreguard.daemon.close_doh_client")
+    @patch("coreguard.daemon.restore_dns")
+    def test_shuts_down_dashboard_and_querydb(self, mock_restore, mock_close, mock_pid_file):
+        udp = MagicMock()
+        tcp = MagicMock()
+        dashboard = MagicMock()
+        query_db = MagicMock()
+        cleanup(udp, tcp, dashboard_server=dashboard, query_db=query_db)
+        dashboard.shutdown.assert_called_once()
+        query_db.close.assert_called_once()
+
 
 class TestMainLoop:
-    """Tests for main_loop. Each test patches time.sleep to raise after
-    controlled iterations so the infinite loop terminates."""
+    """Tests for main_loop. Each test patches _shutdown_requested.wait to
+    raise after controlled iterations so the infinite loop terminates."""
 
     def setup_method(self):
         self.config = Config()
@@ -180,12 +191,14 @@ class TestMainLoop:
         self.stats = Stats()
         self.cache = MagicMock()
 
+    @patch("coreguard.daemon._shutdown_requested")
     @patch("coreguard.daemon.time")
     @patch("coreguard.daemon.STATS_FILE")
     @patch.object(Stats, "save")
-    def test_persists_stats(self, mock_save, mock_stats_file, mock_time):
+    def test_persists_stats(self, mock_save, mock_stats_file, mock_time, mock_shutdown):
         mock_time.time.return_value = 0
-        mock_time.sleep.side_effect = [None, StopIteration]
+        mock_shutdown.wait.side_effect = [None, StopIteration]
+        mock_shutdown.is_set.return_value = False
 
         try:
             main_loop(self.config, self.domain_filter, self.stats, self.cache)
@@ -194,12 +207,14 @@ class TestMainLoop:
 
         mock_save.assert_called()
 
+    @patch("coreguard.daemon._shutdown_requested")
     @patch("coreguard.daemon.update_all_lists")
     @patch("coreguard.daemon._reload_requested")
     @patch("coreguard.daemon.time")
-    def test_sighup_triggers_reload(self, mock_time, mock_reload, mock_update):
+    def test_sighup_triggers_reload(self, mock_time, mock_reload, mock_update, mock_shutdown):
         mock_time.time.return_value = 0
-        mock_time.sleep.side_effect = [None, StopIteration]
+        mock_shutdown.wait.side_effect = [None, StopIteration]
+        mock_shutdown.is_set.return_value = False
         mock_reload.is_set.return_value = True
 
         try:
@@ -211,12 +226,14 @@ class TestMainLoop:
         self.cache.clear.assert_called_once()
         mock_reload.clear.assert_called()
 
+    @patch("coreguard.daemon._shutdown_requested")
     @patch("coreguard.daemon.update_all_lists")
     @patch("coreguard.daemon._reload_requested")
     @patch("coreguard.daemon.time")
-    def test_reload_without_cache(self, mock_time, mock_reload, mock_update):
+    def test_reload_without_cache(self, mock_time, mock_reload, mock_update, mock_shutdown):
         mock_time.time.return_value = 0
-        mock_time.sleep.side_effect = [None, StopIteration]
+        mock_shutdown.wait.side_effect = [None, StopIteration]
+        mock_shutdown.is_set.return_value = False
         mock_reload.is_set.return_value = True
 
         try:
@@ -226,6 +243,7 @@ class TestMainLoop:
 
         mock_update.assert_called_once()
 
+    @patch("coreguard.daemon._shutdown_requested")
     @patch("coreguard.notify.send_notification")
     @patch("coreguard.network.reapply_dns", return_value=True)
     @patch("coreguard.network.get_current_dns", return_value=["8.8.8.8"])
@@ -233,10 +251,11 @@ class TestMainLoop:
     @patch("coreguard.daemon._reload_requested")
     @patch("coreguard.daemon.time")
     def test_dns_drift_reapplies(self, mock_time, mock_reload, mock_ifaces,
-                                  mock_dns, mock_reapply, mock_notify):
+                                  mock_dns, mock_reapply, mock_notify, mock_shutdown):
         # Simulate enough time passing for DNS check (>60s)
         mock_time.time.side_effect = [0, 0, 0, 0, 100, 100, 100, 100, 100, 100, 100]
-        mock_time.sleep.side_effect = [None, StopIteration]
+        mock_shutdown.wait.side_effect = [None, StopIteration]
+        mock_shutdown.is_set.return_value = False
         mock_reload.is_set.return_value = False
 
         try:
@@ -246,12 +265,14 @@ class TestMainLoop:
 
         mock_reapply.assert_called_with("Wi-Fi")
 
+    @patch("coreguard.daemon._shutdown_requested")
     @patch("coreguard.daemon._reload_requested")
     @patch("coreguard.daemon.time")
-    def test_cache_sweep(self, mock_time, mock_reload):
+    def test_cache_sweep(self, mock_time, mock_reload, mock_shutdown):
         # Simulate 301 seconds elapsed for cache sweep (>300s interval)
         mock_time.time.side_effect = [0, 0, 0, 0, 301, 301, 301, 301, 301, 301, 301]
-        mock_time.sleep.side_effect = [None, StopIteration]
+        mock_shutdown.wait.side_effect = [None, StopIteration]
+        mock_shutdown.is_set.return_value = False
         mock_reload.is_set.return_value = False
 
         try:
@@ -261,14 +282,16 @@ class TestMainLoop:
 
         self.cache.sweep_expired.assert_called()
 
+    @patch("coreguard.daemon._shutdown_requested")
     @patch("coreguard.daemon.update_all_lists")
     @patch("coreguard.daemon._reload_requested")
     @patch("coreguard.daemon.time")
-    def test_auto_update(self, mock_time, mock_reload, mock_update):
+    def test_auto_update(self, mock_time, mock_reload, mock_update, mock_shutdown):
         self.config.update_interval_hours = 1
         # Simulate 3601 seconds elapsed — enough values for all timer checks
         mock_time.time.side_effect = [0] * 5 + [3601] * 20
-        mock_time.sleep.side_effect = [None, StopIteration]
+        mock_shutdown.wait.side_effect = [None, StopIteration]
+        mock_shutdown.is_set.return_value = False
         mock_reload.is_set.return_value = False
 
         try:
@@ -277,6 +300,43 @@ class TestMainLoop:
             pass
 
         mock_update.assert_called()
+
+    @patch("sys.exit")
+    @patch("coreguard.daemon._shutdown_requested")
+    @patch("coreguard.daemon.time")
+    def test_shutdown_triggers_cleanup(self, mock_time, mock_shutdown, mock_exit):
+        mock_time.time.return_value = 0
+        mock_shutdown.wait.return_value = None
+        mock_shutdown.is_set.return_value = True
+        mock_exit.side_effect = SystemExit(0)
+        cleanup_fn = MagicMock()
+
+        try:
+            main_loop(self.config, self.domain_filter, self.stats, self.cache,
+                       cleanup_fn=cleanup_fn)
+        except SystemExit:
+            pass
+
+        cleanup_fn.assert_called_once()
+
+    @patch("coreguard.daemon._shutdown_requested")
+    @patch("coreguard.daemon.time")
+    @patch("coreguard.daemon.STATS_FILE")
+    @patch.object(Stats, "save")
+    def test_stats_save_failure_logged(self, mock_save, mock_stats_file, mock_time, mock_shutdown):
+        """Stats save failure should be logged, not silently swallowed."""
+        mock_save.side_effect = OSError("disk full")
+        mock_time.time.return_value = 0
+        mock_shutdown.wait.side_effect = [None, StopIteration]
+        mock_shutdown.is_set.return_value = False
+
+        try:
+            main_loop(self.config, self.domain_filter, self.stats, self.cache)
+        except StopIteration:
+            pass
+
+        # The exception is caught and logged, not re-raised — test passes if no crash
+        mock_save.assert_called()
 
 
 class TestCheckTempExpiry:

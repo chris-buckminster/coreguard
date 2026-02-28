@@ -22,6 +22,31 @@ class TestParseTime:
         t = parse_time("23:59")
         assert t == time(23, 59)
 
+    def test_rejects_invalid_format(self):
+        import pytest
+        with pytest.raises(ValueError):
+            parse_time("9:30")  # missing leading zero
+
+    def test_rejects_out_of_range_hour(self):
+        import pytest
+        with pytest.raises(ValueError):
+            parse_time("25:00")
+
+    def test_rejects_out_of_range_minute(self):
+        import pytest
+        with pytest.raises(ValueError):
+            parse_time("12:60")
+
+    def test_rejects_garbage(self):
+        import pytest
+        with pytest.raises(ValueError):
+            parse_time("not-a-time")
+
+    def test_rejects_empty(self):
+        import pytest
+        with pytest.raises(ValueError):
+            parse_time("")
+
 
 class TestIsScheduleActive:
     def test_active_during_window(self):

@@ -141,21 +141,21 @@
 
 ---
 
-## Phase 5.6 — Hardening & reliability audit
+## Phase 5.6 — Hardening & reliability audit *(done)*
 
-**Full codebase audit**
-- [ ] Review all source files for reliability concerns (race conditions, resource leaks, crash scenarios)
-- [ ] Identify and fix error handling gaps (swallowed exceptions, missing timeouts, unhandled edge cases)
-- [ ] Harden against network failures, disk full, permission errors, and malformed DNS input
-- [ ] Audit for security concerns (input validation, injection points, unsafe defaults)
+**Full codebase audit** *(done)*
+- [x] Review all source files for reliability concerns (race conditions, resource leaks, crash scenarios)
+- [x] Identify and fix error handling gaps (swallowed exceptions, missing timeouts, unhandled edge cases)
+- [x] Harden against network failures, disk full, permission errors, and malformed DNS input
+- [x] Audit for security concerns (input validation, injection points, unsafe defaults)
 
-**Test coverage**
-- [ ] Identify important code paths without tests and add coverage
-- [ ] Add stress/edge-case tests (truncated responses, large payloads, concurrent queries)
+**Test coverage** *(done)*
+- [x] Identify important code paths without tests and add coverage
+- [x] Add stress/edge-case tests (truncated responses, large payloads, concurrent queries)
 
-**Performance review**
-- [ ] Check for blocking I/O in hot paths, lock contention, and unbounded growth
-- [ ] Profile and optimize where needed
+**Performance review** *(done)*
+- [x] Check for blocking I/O in hot paths, lock contention, and unbounded growth
+- [x] Profile and optimize where needed
 
 ---
 
