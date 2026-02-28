@@ -119,6 +119,46 @@
 
 ---
 
+## Phase 5.5 — Dashboard polish
+
+**Live updates**
+- [ ] Stat cards and query feed refresh every 1 second
+- [ ] Charts refresh every 5 seconds
+- [ ] Use existing SSE stream and periodic fetch
+
+**Dark / light mode**
+- [ ] Auto-detect system preference via `prefers-color-scheme`
+- [ ] Manual toggle with localStorage persistence
+- [ ] Full theme coverage across all dashboard elements
+
+**Visual refresh**
+- [ ] Clean, modern design pass (typography, spacing, color palette, card layout)
+- [ ] Single-file architecture preserved (all HTML/CSS/JS inline)
+
+**Built-in Help tab**
+- [ ] User-friendly guide inside the dashboard for non-power users
+- [ ] Explains what coreguard does and how to use each feature
+
+---
+
+## Phase 5.6 — Hardening & reliability audit
+
+**Full codebase audit**
+- [ ] Review all source files for reliability concerns (race conditions, resource leaks, crash scenarios)
+- [ ] Identify and fix error handling gaps (swallowed exceptions, missing timeouts, unhandled edge cases)
+- [ ] Harden against network failures, disk full, permission errors, and malformed DNS input
+- [ ] Audit for security concerns (input validation, injection points, unsafe defaults)
+
+**Test coverage**
+- [ ] Identify important code paths without tests and add coverage
+- [ ] Add stress/edge-case tests (truncated responses, large payloads, concurrent queries)
+
+**Performance review**
+- [ ] Check for blocking I/O in hot paths, lock contention, and unbounded growth
+- [ ] Profile and optimize where needed
+
+---
+
 ## Phase 6 — Per-app firewall
 
 **Per-application network rules**
