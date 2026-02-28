@@ -238,3 +238,63 @@ class TestCacheIntegration:
         response = resolver_no_cache.resolve(request, None)
         assert self.stats.total_queries == 1
         assert self.stats.cache_hits == 0
+
+
+class TestSafeSearch:
+    def setup_method(self):
+        self.domain_filter = DomainFilter()
+        self.config = Config()
+        self.config.safe_search_enabled = True
+        self.stats = Stats()
+        self.query_logger = MagicMock()
+        self.resolver = BlockingResolver(
+            self.domain_filter, self.config, self.stats, self.query_logger
+        )
+
+    def test_google_rewritten(self):
+        """Google queries should be rewritten to forcesafesearch.google.com."""
+        request = _make_request("www.google.com")
+        response = self.resolver.resolve(request, None)
+        assert len(response.rr) == 1
+        assert response.rr[0].rtype == QTYPE.CNAME
+        assert str(response.rr[0].rdata) == "forcesafesearch.google.com."
+        assert self.stats.total_queries == 1
+        assert self.stats.blocked_queries == 0
+
+    @patch("coreguard.dns_server.resolve_upstream")
+    def test_non_search_forwarded_normally(self, mock_upstream):
+        """Non-search domains should be forwarded normally."""
+        mock_upstream.return_value = _make_upstream_response("github.com", "140.82.121.4")
+        request = _make_request("github.com")
+        response = self.resolver.resolve(request, None)
+        assert self.stats.blocked_queries == 0
+        mock_upstream.assert_called_once()
+
+    @patch("coreguard.dns_server.resolve_upstream")
+    def test_safe_search_disabled_no_rewrite(self, mock_upstream):
+        """When safe_search_enabled=False, Google should not be rewritten."""
+        self.config.safe_search_enabled = False
+        mock_upstream.return_value = _make_upstream_response("www.google.com", "142.250.80.4")
+        request = _make_request("www.google.com")
+        response = self.resolver.resolve(request, None)
+        # Should go to upstream, not rewritten
+        mock_upstream.assert_called_once()
+
+    def test_youtube_moderate(self):
+        """YouTube should be rewritten to restrict.youtube.com by default."""
+        self.config.safe_search_youtube_restrict = "moderate"
+        request = _make_request("www.youtube.com")
+        response = self.resolver.resolve(request, None)
+        assert str(response.rr[0].rdata) == "restrict.youtube.com."
+
+    def test_youtube_strict(self):
+        """YouTube strict mode should use restrictmoderate.youtube.com."""
+        self.config.safe_search_youtube_restrict = "strict"
+        request = _make_request("www.youtube.com")
+        response = self.resolver.resolve(request, None)
+        assert str(response.rr[0].rdata) == "restrictmoderate.youtube.com."
+
+    def test_bing_rewritten(self):
+        request = _make_request("www.bing.com")
+        response = self.resolver.resolve(request, None)
+        assert str(response.rr[0].rdata) == "strict.bing.com."

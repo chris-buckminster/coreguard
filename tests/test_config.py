@@ -1,4 +1,4 @@
-from coreguard.config import Config, UpstreamProvider, _config_to_dict, _dict_to_config, load_config, save_config
+from coreguard.config import Config, Schedule, UpstreamProvider, _config_to_dict, _dict_to_config, load_config, save_config
 
 
 class TestConfig:
@@ -89,3 +89,65 @@ class TestConfig:
         config = _dict_to_config(data)
         assert config.dashboard_token == ""
         assert config.dashboard_port == 9090
+
+    def test_schedule_roundtrip(self):
+        config = Config()
+        config.schedules = [
+            Schedule(
+                name="work-hours",
+                start="09:00",
+                end="17:00",
+                days=["mon", "tue", "wed", "thu", "fri"],
+                block_domains=["reddit.com"],
+                block_patterns=["*.tiktok.com"],
+                enabled=True,
+            ),
+        ]
+        d = _config_to_dict(config)
+        assert len(d["schedules"]) == 1
+        assert d["schedules"][0]["name"] == "work-hours"
+
+        restored = _dict_to_config(d)
+        assert len(restored.schedules) == 1
+        s = restored.schedules[0]
+        assert s.name == "work-hours"
+        assert s.start == "09:00"
+        assert s.end == "17:00"
+        assert s.days == ["mon", "tue", "wed", "thu", "fri"]
+        assert s.block_domains == ["reddit.com"]
+        assert s.block_patterns == ["*.tiktok.com"]
+        assert s.enabled is True
+
+    def test_schedules_default_empty(self):
+        config = Config()
+        assert config.schedules == []
+
+    def test_parental_config_roundtrip(self):
+        config = Config()
+        config.safe_search_enabled = True
+        config.safe_search_youtube_restrict = "strict"
+        config.content_categories = ["adult", "gambling"]
+
+        d = _config_to_dict(config)
+        assert d["parental"]["safe_search_enabled"] is True
+        assert d["parental"]["safe_search_youtube_restrict"] == "strict"
+        assert d["parental"]["content_categories"] == ["adult", "gambling"]
+
+        restored = _dict_to_config(d)
+        assert restored.safe_search_enabled is True
+        assert restored.safe_search_youtube_restrict == "strict"
+        assert restored.content_categories == ["adult", "gambling"]
+
+    def test_parental_defaults(self):
+        config = Config()
+        assert config.safe_search_enabled is False
+        assert config.safe_search_youtube_restrict == "moderate"
+        assert config.content_categories == []
+
+    def test_parental_absent_uses_defaults(self):
+        """Missing parental section should use defaults."""
+        data = {"upstream": {"mode": "doh"}}
+        config = _dict_to_config(data)
+        assert config.safe_search_enabled is False
+        assert config.safe_search_youtube_restrict == "moderate"
+        assert config.content_categories == []

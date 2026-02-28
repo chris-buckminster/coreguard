@@ -214,6 +214,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/update": self._handle_update,
             "/api/cache/clear": self._handle_cache_clear,
             "/api/daemon/stop": self._handle_daemon_stop,
+            "/api/parental": self._handle_parental,
+            "/api/schedules/add": self._handle_schedule_add,
+            "/api/schedules/remove": self._handle_schedule_remove,
+            "/api/schedules/toggle": self._handle_schedule_toggle,
         }
 
         handler = routes.get(path)
@@ -322,6 +326,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not cfg:
             self._json_response({})
             return
+
+        from coreguard.schedule import is_schedule_active
+
         data = {
             "upstream_mode": cfg.upstream_mode,
             "providers": [p.name for p in cfg.upstream_providers],
@@ -335,6 +342,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"name": f["name"], "enabled": f.get("enabled", True)}
                 for f in cfg.filter_lists
             ],
+            "schedules": [
+                {
+                    "name": s.name,
+                    "start": s.start,
+                    "end": s.end,
+                    "days": s.days,
+                    "block_domains": s.block_domains,
+                    "block_patterns": s.block_patterns,
+                    "enabled": s.enabled,
+                    "active": is_schedule_active(s),
+                }
+                for s in cfg.schedules
+            ],
+            "parental": {
+                "safe_search_enabled": cfg.safe_search_enabled,
+                "safe_search_youtube_restrict": cfg.safe_search_youtube_restrict,
+                "content_categories": cfg.content_categories,
+            },
         }
         self._json_response(data)
 
@@ -465,14 +490,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = self._read_json_body()
         if body is None:
             return
-        domain = _validate_domain(body.get("domain", ""))
-        if not domain:
-            self._json_response({"error": "Invalid domain"}, status=400)
-            return
-        with open(CUSTOM_ALLOW_FILE, "a") as f:
-            f.write(domain + "\n")
-        _send_self_sighup()
-        self._json_response({"status": "ok", "domain": domain})
+        is_regex = body.get("regex", False)
+        if is_regex:
+            pattern = body.get("domain", "")
+            if not pattern:
+                self._json_response({"error": "Missing regex pattern"}, status=400)
+                return
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                self._json_response({"error": f"Invalid regex: {e}"}, status=400)
+                return
+            with open(CUSTOM_ALLOW_FILE, "a") as f:
+                f.write(f"regex:{pattern}\n")
+            _send_self_sighup()
+            self._json_response({"status": "ok", "pattern": pattern, "type": "regex"})
+        else:
+            domain = _validate_domain(body.get("domain", ""))
+            if not domain:
+                self._json_response({"error": "Invalid domain"}, status=400)
+                return
+            with open(CUSTOM_ALLOW_FILE, "a") as f:
+                f.write(domain + "\n")
+            _send_self_sighup()
+            self._json_response({"status": "ok", "domain": domain})
 
     def _handle_domains_block(self) -> None:
         if not self._check_auth():
@@ -480,14 +521,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = self._read_json_body()
         if body is None:
             return
-        domain = _validate_domain(body.get("domain", ""))
-        if not domain:
-            self._json_response({"error": "Invalid domain"}, status=400)
-            return
-        with open(CUSTOM_BLOCK_FILE, "a") as f:
-            f.write(domain + "\n")
-        _send_self_sighup()
-        self._json_response({"status": "ok", "domain": domain})
+        is_regex = body.get("regex", False)
+        if is_regex:
+            pattern = body.get("domain", "")
+            if not pattern:
+                self._json_response({"error": "Missing regex pattern"}, status=400)
+                return
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                self._json_response({"error": f"Invalid regex: {e}"}, status=400)
+                return
+            with open(CUSTOM_BLOCK_FILE, "a") as f:
+                f.write(f"regex:{pattern}\n")
+            _send_self_sighup()
+            self._json_response({"status": "ok", "pattern": pattern, "type": "regex"})
+        else:
+            domain = _validate_domain(body.get("domain", ""))
+            if not domain:
+                self._json_response({"error": "Invalid domain"}, status=400)
+                return
+            with open(CUSTOM_BLOCK_FILE, "a") as f:
+                f.write(domain + "\n")
+            _send_self_sighup()
+            self._json_response({"status": "ok", "domain": domain})
 
     def _handle_domains_unblock(self) -> None:
         if not self._check_auth():
@@ -678,6 +735,136 @@ class DashboardHandler(BaseHTTPRequestHandler):
             os.kill(os.getpid(), signal.SIGTERM)
 
         threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+
+    def _handle_parental(self) -> None:
+        if not self._check_auth():
+            return
+        body = self._read_json_body()
+        if body is None:
+            return
+
+        cfg = load_config()
+
+        if "safe_search_enabled" in body:
+            cfg.safe_search_enabled = bool(body["safe_search_enabled"])
+        if "safe_search_youtube_restrict" in body:
+            restrict = body["safe_search_youtube_restrict"]
+            if restrict in ("moderate", "strict"):
+                cfg.safe_search_youtube_restrict = restrict
+        if "content_categories" in body:
+            from coreguard.safesearch import CONTENT_CATEGORY_LISTS
+            cats = [c for c in body["content_categories"] if c in CONTENT_CATEGORY_LISTS]
+            cfg.content_categories = cats
+
+        save_config(cfg)
+        _send_self_sighup()
+        self._json_response({
+            "status": "ok",
+            "safe_search_enabled": cfg.safe_search_enabled,
+            "safe_search_youtube_restrict": cfg.safe_search_youtube_restrict,
+            "content_categories": cfg.content_categories,
+        })
+
+    def _handle_schedule_add(self) -> None:
+        if not self._check_auth():
+            return
+        body = self._read_json_body()
+        if body is None:
+            return
+
+        name = body.get("name", "").strip()
+        if not name:
+            self._json_response({"error": "Missing schedule name"}, status=400)
+            return
+
+        from coreguard.config import Schedule
+        from coreguard.schedule import parse_time
+
+        start = body.get("start", "00:00")
+        end = body.get("end", "23:59")
+        try:
+            parse_time(start)
+            parse_time(end)
+        except (ValueError, IndexError):
+            self._json_response({"error": "Invalid time format. Use HH:MM."}, status=400)
+            return
+
+        all_days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        days = body.get("days", all_days)
+        if not isinstance(days, list) or not all(d in all_days for d in days):
+            self._json_response({"error": "Invalid days list"}, status=400)
+            return
+
+        cfg = load_config()
+        for s in cfg.schedules:
+            if s.name == name:
+                self._json_response({"error": f"Schedule '{name}' already exists"}, status=409)
+                return
+
+        new_schedule = Schedule(
+            name=name,
+            start=start,
+            end=end,
+            days=days,
+            block_domains=body.get("block_domains", []),
+            block_patterns=body.get("block_patterns", []),
+            enabled=body.get("enabled", True),
+        )
+        cfg.schedules.append(new_schedule)
+        save_config(cfg)
+        _send_self_sighup()
+        self._json_response({"status": "ok", "name": name, "action": "added"})
+
+    def _handle_schedule_remove(self) -> None:
+        if not self._check_auth():
+            return
+        body = self._read_json_body()
+        if body is None:
+            return
+
+        name = body.get("name", "").strip()
+        if not name:
+            self._json_response({"error": "Missing schedule name"}, status=400)
+            return
+
+        cfg = load_config()
+        original = len(cfg.schedules)
+        cfg.schedules = [s for s in cfg.schedules if s.name != name]
+        if len(cfg.schedules) == original:
+            self._json_response({"error": f"Schedule '{name}' not found"}, status=404)
+            return
+
+        save_config(cfg)
+        _send_self_sighup()
+        self._json_response({"status": "ok", "name": name, "action": "removed"})
+
+    def _handle_schedule_toggle(self) -> None:
+        if not self._check_auth():
+            return
+        body = self._read_json_body()
+        if body is None:
+            return
+
+        name = body.get("name", "").strip()
+        enabled = body.get("enabled")
+        if not name or enabled is None:
+            self._json_response({"error": "Missing 'name' or 'enabled' field"}, status=400)
+            return
+
+        cfg = load_config()
+        found = False
+        for s in cfg.schedules:
+            if s.name == name:
+                s.enabled = bool(enabled)
+                found = True
+                break
+        if not found:
+            self._json_response({"error": f"Schedule '{name}' not found"}, status=404)
+            return
+
+        save_config(cfg)
+        _send_self_sighup()
+        self._json_response({"status": "ok", "name": name, "enabled": bool(enabled)})
 
     def log_message(self, format, *args):
         # Suppress default stderr logging from http.server
@@ -928,6 +1115,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border-radius: 10px; font-size: 11px; margin-left: 6px; font-weight: 600;
   }
   .empty-state { padding: 24px; text-align: center; color: #484f58; font-size: 13px; }
+  .regex-tag { display: inline-block; background: #1f6feb; color: #fff; padding: 1px 5px; border-radius: 3px; font-size: 10px; margin-right: 6px; font-weight: 600; }
+  .regex-toggle { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #8b949e; cursor: pointer; white-space: nowrap; }
+  .regex-toggle input { margin: 0; }
+  .help-text { color: #8b949e; font-size: 12px; margin: 4px 0 12px; }
+  .form-grid { display: flex; flex-direction: column; gap: 10px; }
+  .form-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .form-row label { color: #8b949e; font-size: 12px; min-width: 100px; }
+  .form-row input { flex: 1; }
+  .day-picks { display: flex; gap: 6px; flex-wrap: wrap; }
+  .day-pick { display: flex; align-items: center; gap: 3px; font-size: 12px; color: #c9d1d9; cursor: pointer; }
+  .day-pick input { margin: 0; }
+  .sched-card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 14px; margin-bottom: 10px;
+  }
+  .sched-card .sched-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .sched-card .sched-name { font-weight: 600; font-size: 14px; }
+  .sched-card .sched-time { color: #8b949e; font-size: 12px; font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .sched-card .sched-days { color: #8b949e; font-size: 11px; margin-bottom: 4px; }
+  .sched-card .sched-rules { font-size: 12px; color: #c9d1d9; font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .sched-card .active-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .sched-card .active-dot.on { background: #3fb950; }
+  .sched-card .active-dot.off { background: #484f58; }
 
   /* --- Config card --- */
   .config-card {
@@ -1054,6 +1264,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="tab" data-tab="queries">Queries <span class="live-badge" id="live-badge" style="display:none">LIVE</span></div>
   <div class="tab" data-tab="domains">Domains</div>
   <div class="tab" data-tab="lists">Lists</div>
+  <div class="tab" data-tab="schedules">Schedules</div>
+  <div class="tab" data-tab="parental">Parental</div>
   <div class="tab" data-tab="settings">Settings</div>
 </div>
 
@@ -1129,7 +1341,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="section">
     <h2>Allowlist <span class="count-badge" id="allow-count">0</span></h2>
     <div class="inline-form">
-      <input type="text" id="allow-input" placeholder="example.com">
+      <input type="text" id="allow-input" placeholder="example.com or regex pattern">
+      <label class="regex-toggle"><input type="checkbox" id="allow-regex-toggle"><span>Regex</span></label>
       <button class="btn btn-primary btn-sm" onclick="addDomain('allow')">Add</button>
     </div>
     <div class="domain-list" id="allow-list"></div>
@@ -1137,7 +1350,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="section">
     <h2>Blocklist <span class="count-badge" id="block-count">0</span></h2>
     <div class="inline-form">
-      <input type="text" id="block-input" placeholder="ads.example.com">
+      <input type="text" id="block-input" placeholder="ads.example.com or regex pattern">
+      <label class="regex-toggle"><input type="checkbox" id="block-regex-toggle"><span>Regex</span></label>
       <button class="btn btn-primary btn-sm" onclick="addDomain('block')">Add</button>
     </div>
     <div class="domain-list" id="block-list"></div>
@@ -1174,7 +1388,90 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Tab 5: Settings -->
+<!-- Tab 5: Schedules -->
+<div class="tab-content" id="tab-schedules">
+  <div class="section">
+    <h2>Filtering Schedules <span class="count-badge" id="sched-count">0</span></h2>
+    <div id="sched-list"></div>
+  </div>
+  <div class="section">
+    <h2>Add Schedule</h2>
+    <div class="form-grid">
+      <div class="form-row">
+        <label>Name</label>
+        <input type="text" id="sched-name" placeholder="work-hours">
+      </div>
+      <div class="form-row">
+        <label>Start</label>
+        <input type="text" id="sched-start" placeholder="09:00" style="max-width:100px">
+        <label style="margin-left:12px">End</label>
+        <input type="text" id="sched-end" placeholder="17:00" style="max-width:100px">
+      </div>
+      <div class="form-row">
+        <label>Days</label>
+        <div class="day-picks">
+          <label class="day-pick"><input type="checkbox" value="mon" checked><span>Mon</span></label>
+          <label class="day-pick"><input type="checkbox" value="tue" checked><span>Tue</span></label>
+          <label class="day-pick"><input type="checkbox" value="wed" checked><span>Wed</span></label>
+          <label class="day-pick"><input type="checkbox" value="thu" checked><span>Thu</span></label>
+          <label class="day-pick"><input type="checkbox" value="fri" checked><span>Fri</span></label>
+          <label class="day-pick"><input type="checkbox" value="sat" checked><span>Sat</span></label>
+          <label class="day-pick"><input type="checkbox" value="sun" checked><span>Sun</span></label>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Block domains</label>
+        <input type="text" id="sched-domains" placeholder="reddit.com, twitter.com (comma-separated)">
+      </div>
+      <div class="form-row">
+        <label>Block patterns</label>
+        <input type="text" id="sched-patterns" placeholder="*.tiktok.com, regex:^game.*$ (comma-separated)">
+      </div>
+    </div>
+    <div class="actions" style="margin-top:12px">
+      <button class="btn btn-primary" onclick="addSchedule()">Add Schedule</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tab 6: Parental -->
+<div class="tab-content" id="tab-parental">
+  <div class="section">
+    <h2>Safe Search</h2>
+    <p class="help-text">When enabled, search engines are redirected to their safe variants via DNS (Google, YouTube, Bing, DuckDuckGo).</p>
+    <div class="config-row" style="margin:12px 0">
+      <span class="key">Safe Search</span>
+      <label class="toggle"><input type="checkbox" id="safesearch-toggle" onchange="toggleSafeSearch(this.checked)"><span class="slider"></span></label>
+    </div>
+    <div class="config-row" style="margin:12px 0">
+      <span class="key">YouTube Restriction</span>
+      <select id="yt-restrict" onchange="setYoutubeRestrict(this.value)" style="background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 8px">
+        <option value="moderate">Moderate</option>
+        <option value="strict">Strict</option>
+      </select>
+    </div>
+  </div>
+  <div class="section">
+    <h2>Content Categories</h2>
+    <p class="help-text">Block entire categories of websites using curated filter lists.</p>
+    <div id="cat-list">
+      <div class="config-row" style="margin:8px 0">
+        <span class="key">Adult content</span>
+        <label class="toggle"><input type="checkbox" id="cat-adult" onchange="toggleCategory()"><span class="slider"></span></label>
+      </div>
+      <div class="config-row" style="margin:8px 0">
+        <span class="key">Gambling</span>
+        <label class="toggle"><input type="checkbox" id="cat-gambling" onchange="toggleCategory()"><span class="slider"></span></label>
+      </div>
+      <div class="config-row" style="margin:8px 0">
+        <span class="key">Social media</span>
+        <label class="toggle"><input type="checkbox" id="cat-social" onchange="toggleCategory()"><span class="slider"></span></label>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Tab 7: Settings -->
 <div class="tab-content" id="tab-settings">
   <div class="section">
     <h2>Configuration</h2>
@@ -1547,6 +1844,14 @@ function exportQueries(format) {
 }
 
 // --- Domains ---
+function renderDomainEntry(d, type) {
+  const isRegex = d.startsWith('regex:');
+  const display = isRegex ? d.substring(6) : d;
+  const tag = isRegex ? '<span class="regex-tag">regex</span>' : '';
+  const click = isRegex ? '' : ' clickable" onclick="drillDomain(&#39;'+esc(d)+'&#39;)';
+  return '<div class="domain-item"><span class="name'+click+'">'+tag+esc(display)+'</span><button class="btn btn-sm" onclick="removeDomain(&#39;'+type+'&#39;,&#39;'+esc(d)+'&#39;)">Remove</button></div>';
+}
+
 async function refreshDomains() {
   try {
     const data = await fetch('/api/domains').then(r => r.json());
@@ -1559,11 +1864,11 @@ async function refreshDomains() {
     document.getElementById('temp-count').textContent = tl.length;
 
     document.getElementById('allow-list').innerHTML = al.length
-      ? al.map(d => '<div class="domain-item"><span class="name clickable" onclick="drillDomain(&#39;'+esc(d)+'&#39;)">'+esc(d)+'</span><button class="btn btn-sm" onclick="removeDomain(&#39;allow&#39;,&#39;'+esc(d)+'&#39;)">Remove</button></div>').join('')
+      ? al.map(d => renderDomainEntry(d, 'allow')).join('')
       : '<div class="empty-state">No custom allowed domains</div>';
 
     document.getElementById('block-list').innerHTML = bl.length
-      ? bl.map(d => '<div class="domain-item"><span class="name clickable" onclick="drillDomain(&#39;'+esc(d)+'&#39;)">'+esc(d)+'</span><button class="btn btn-sm" onclick="removeDomain(&#39;block&#39;,&#39;'+esc(d)+'&#39;)">Remove</button></div>').join('')
+      ? bl.map(d => renderDomainEntry(d, 'block')).join('')
       : '<div class="empty-state">No custom blocked domains</div>';
 
     const now = Date.now() / 1000;
@@ -1580,12 +1885,16 @@ async function refreshDomains() {
 
 async function addDomain(type) {
   const input = document.getElementById(type === 'allow' ? 'allow-input' : 'block-input');
-  const domain = input.value.trim().toLowerCase();
+  const regexCheck = document.getElementById(type + '-regex-toggle');
+  const isRegex = regexCheck && regexCheck.checked;
+  const domain = input.value.trim();
   if (!domain) return;
   try {
-    await api('POST', '/api/domains/' + type, { domain });
-    toast('Added ' + domain + ' to ' + type + 'list');
+    const body = isRegex ? { domain, regex: true } : { domain: domain.toLowerCase() };
+    await api('POST', '/api/domains/' + type, body);
+    toast('Added ' + (isRegex ? 'regex ' : '') + domain + ' to ' + type + 'list');
     input.value = '';
+    if (regexCheck) regexCheck.checked = false;
     refreshDomains();
   } catch(e) { toast(e.message, 'error'); }
 }
@@ -1657,6 +1966,122 @@ async function triggerUpdate() {
 }
 
 // --- Settings ---
+// --- Schedules ---
+async function refreshSchedules() {
+  try {
+    const data = await fetch('/api/config').then(r => r.json());
+    const schedules = data.schedules || [];
+    document.getElementById('sched-count').textContent = schedules.length;
+
+    if (!schedules.length) {
+      document.getElementById('sched-list').innerHTML = '<div class="empty-state">No schedules configured</div>';
+      return;
+    }
+
+    document.getElementById('sched-list').innerHTML = schedules.map(s => {
+      const dotClass = s.active ? 'on' : 'off';
+      const statusText = s.active ? 'Active' : (s.enabled ? 'Inactive' : 'Disabled');
+      const rules = [...(s.block_domains||[]), ...(s.block_patterns||[])];
+      return '<div class="sched-card">'
+        + '<div class="sched-header">'
+        +   '<div><span class="active-dot '+dotClass+'"></span><span class="sched-name">'+esc(s.name)+'</span> <span style="color:#8b949e;font-size:11px">('+statusText+')</span></div>'
+        +   '<div style="display:flex;gap:6px;align-items:center">'
+        +     '<label class="toggle"><input type="checkbox" '+(s.enabled?'checked':'')+' onchange="toggleSchedule(&#39;'+esc(s.name)+'&#39;,this.checked)"><span class="slider"></span></label>'
+        +     '<button class="btn btn-sm" onclick="removeSchedule(&#39;'+esc(s.name)+'&#39;)">Remove</button>'
+        +   '</div>'
+        + '</div>'
+        + '<div class="sched-time">'+esc(s.start)+' – '+esc(s.end)+'</div>'
+        + '<div class="sched-days">'+esc((s.days||[]).join(', '))+'</div>'
+        + (rules.length ? '<div class="sched-rules">'+rules.map(r => esc(r)).join(', ')+'</div>' : '')
+        + '</div>';
+    }).join('');
+  } catch(e) { console.error('Schedules refresh failed:', e); }
+}
+
+async function addSchedule() {
+  const name = document.getElementById('sched-name').value.trim();
+  const start = document.getElementById('sched-start').value.trim();
+  const end = document.getElementById('sched-end').value.trim();
+  if (!name || !start || !end) { toast('Name, start, and end time are required', 'error'); return; }
+
+  const dayBoxes = document.querySelectorAll('.day-picks input[type=checkbox]');
+  const days = [];
+  dayBoxes.forEach(cb => { if (cb.checked) days.push(cb.value); });
+  if (!days.length) { toast('Select at least one day', 'error'); return; }
+
+  const domainsRaw = document.getElementById('sched-domains').value.trim();
+  const patternsRaw = document.getElementById('sched-patterns').value.trim();
+  const block_domains = domainsRaw ? domainsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const block_patterns = patternsRaw ? patternsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+  try {
+    await api('POST', '/api/schedules/add', { name, start, end, days, block_domains, block_patterns });
+    toast('Schedule "' + name + '" added');
+    document.getElementById('sched-name').value = '';
+    document.getElementById('sched-start').value = '';
+    document.getElementById('sched-end').value = '';
+    document.getElementById('sched-domains').value = '';
+    document.getElementById('sched-patterns').value = '';
+    refreshSchedules();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function removeSchedule(name) {
+  if (!confirm('Remove schedule "' + name + '"?')) return;
+  try {
+    await api('POST', '/api/schedules/remove', { name });
+    toast('Schedule "' + name + '" removed');
+    refreshSchedules();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function toggleSchedule(name, enabled) {
+  try {
+    await api('POST', '/api/schedules/toggle', { name, enabled });
+    toast('Schedule "' + name + '" ' + (enabled ? 'enabled' : 'disabled'));
+    refreshSchedules();
+  } catch(e) { toast(e.message, 'error'); refreshSchedules(); }
+}
+
+// --- Parental Controls ---
+async function refreshParental() {
+  try {
+    const data = await fetch('/api/config').then(r => r.json());
+    const p = data.parental || {};
+    document.getElementById('safesearch-toggle').checked = !!p.safe_search_enabled;
+    document.getElementById('yt-restrict').value = p.safe_search_youtube_restrict || 'moderate';
+    const cats = p.content_categories || [];
+    document.getElementById('cat-adult').checked = cats.includes('adult');
+    document.getElementById('cat-gambling').checked = cats.includes('gambling');
+    document.getElementById('cat-social').checked = cats.includes('social');
+  } catch(e) { console.error('Parental refresh failed:', e); }
+}
+
+async function toggleSafeSearch(enabled) {
+  try {
+    await api('POST', '/api/parental', { safe_search_enabled: enabled });
+    toast('Safe search ' + (enabled ? 'enabled' : 'disabled'));
+  } catch(e) { toast(e.message, 'error'); refreshParental(); }
+}
+
+async function setYoutubeRestrict(level) {
+  try {
+    await api('POST', '/api/parental', { safe_search_youtube_restrict: level });
+    toast('YouTube restriction set to ' + level);
+  } catch(e) { toast(e.message, 'error'); refreshParental(); }
+}
+
+async function toggleCategory() {
+  const cats = [];
+  if (document.getElementById('cat-adult').checked) cats.push('adult');
+  if (document.getElementById('cat-gambling').checked) cats.push('gambling');
+  if (document.getElementById('cat-social').checked) cats.push('social');
+  try {
+    await api('POST', '/api/parental', { content_categories: cats });
+    toast('Content categories updated');
+  } catch(e) { toast(e.message, 'error'); refreshParental(); }
+}
+
 async function refreshSettings() {
   try {
     const data = await fetch('/api/config').then(r => r.json());
@@ -1877,6 +2302,8 @@ async function init() {
   fetchQueries();
   refreshDomains();
   refreshLists();
+  refreshSchedules();
+  refreshParental();
   refreshSettings();
   connectSSE();
 }
@@ -1887,6 +2314,8 @@ setInterval(() => {
   if (document.getElementById('tab-queries').classList.contains('active') && !sseConnected) fetchQueries();
   if (document.getElementById('tab-domains').classList.contains('active')) refreshDomains();
   if (document.getElementById('tab-lists').classList.contains('active')) refreshLists();
+  if (document.getElementById('tab-schedules').classList.contains('active')) refreshSchedules();
+  if (document.getElementById('tab-parental').classList.contains('active')) refreshParental();
 }, pollInterval);
 setInterval(refreshHistory, 60000);
 </script>

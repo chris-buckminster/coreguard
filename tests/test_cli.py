@@ -69,6 +69,33 @@ class TestCLI:
             assert "evil.com" in block_file.read_text()
 
     @patch("coreguard.cli.os.geteuid", return_value=0)
+    def test_block_regex(self, mock_euid, tmp_path):
+        block_file = tmp_path / "block.txt"
+        block_file.touch()
+        with patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file):
+            result = self.runner.invoke(main, ["block", "--regex", r"^ads\..*\.com$"])
+            assert result.exit_code == 0
+            assert r"regex:^ads\..*\.com$" in block_file.read_text()
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    def test_allow_regex(self, mock_euid, tmp_path):
+        allow_file = tmp_path / "allow.txt"
+        allow_file.touch()
+        with patch("coreguard.cli.CUSTOM_ALLOW_FILE", allow_file):
+            result = self.runner.invoke(main, ["allow", "--regex", r"^safe\..*\.com$"])
+            assert result.exit_code == 0
+            assert r"regex:^safe\..*\.com$" in allow_file.read_text()
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    def test_block_regex_invalid(self, mock_euid, tmp_path):
+        block_file = tmp_path / "block.txt"
+        block_file.touch()
+        with patch("coreguard.cli.CUSTOM_BLOCK_FILE", block_file):
+            result = self.runner.invoke(main, ["block", "--regex", r"[invalid"])
+            assert result.exit_code != 0
+            assert "Invalid regex" in result.output
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
     @patch("coreguard.cli.read_pid", return_value=None)
     def test_unblock_adds_to_allowlist(self, mock_pid, mock_euid, tmp_path):
         allow_file = tmp_path / "allow.txt"
@@ -458,3 +485,227 @@ class TestJSONOutput:
         assert data["status"] == "ok"
         assert data["domains_count"] == 50000
         assert "reload_signal_sent" in data
+
+
+class TestScheduleCLI:
+    def setup_method(self):
+        self.runner = CliRunner()
+        self._ensure_patcher = patch("coreguard.cli.ensure_dirs")
+        self._ensure_patcher.start()
+
+    def teardown_method(self):
+        self._ensure_patcher.stop()
+
+    @patch("coreguard.cli.load_config")
+    def test_schedule_list_empty(self, mock_config):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result = self.runner.invoke(main, ["schedule", "list"])
+        assert result.exit_code == 0
+        assert "No schedules" in result.output
+
+    @patch("coreguard.cli.load_config")
+    def test_schedule_list_json(self, mock_config):
+        from coreguard.config import Config, Schedule
+        config = Config()
+        config.schedules = [Schedule(name="test", start="09:00", end="17:00")]
+        mock_config.return_value = config
+        result = self.runner.invoke(main, ["--json", "schedule", "list"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["status"] == "ok"
+        assert len(data["schedules"]) == 1
+        assert data["schedules"][0]["name"] == "test"
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_schedule_add(self, mock_pid, mock_save, mock_config, mock_euid):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result = self.runner.invoke(main, [
+            "schedule", "add", "--name", "work",
+            "--start", "09:00", "--end", "17:00",
+            "--days", "mon,tue,wed,thu,fri",
+            "--domain", "reddit.com",
+            "--pattern", "*.tiktok.com",
+        ])
+        assert result.exit_code == 0
+        assert "work" in result.output
+        assert "added" in result.output.lower()
+        # Verify config was saved with the new schedule
+        saved_config = mock_save.call_args[0][0]
+        assert len(saved_config.schedules) == 1
+        assert saved_config.schedules[0].name == "work"
+        assert saved_config.schedules[0].block_domains == ["reddit.com"]
+        assert saved_config.schedules[0].block_patterns == ["*.tiktok.com"]
+        assert saved_config.schedules[0].days == ["mon", "tue", "wed", "thu", "fri"]
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_schedule_add_defaults_all_days(self, mock_pid, mock_save, mock_config, mock_euid):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result = self.runner.invoke(main, [
+            "schedule", "add", "--name", "daily",
+            "--start", "08:00", "--end", "22:00",
+        ])
+        assert result.exit_code == 0
+        saved_config = mock_save.call_args[0][0]
+        assert saved_config.schedules[0].days == ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_schedule_add_duplicate_name(self, mock_pid, mock_save, mock_config, mock_euid):
+        from coreguard.config import Config, Schedule
+        config = Config()
+        config.schedules = [Schedule(name="work")]
+        mock_config.return_value = config
+        result = self.runner.invoke(main, [
+            "schedule", "add", "--name", "work",
+            "--start", "09:00", "--end", "17:00",
+        ])
+        assert result.exit_code != 0
+        assert "already exists" in result.output
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_schedule_remove(self, mock_pid, mock_save, mock_config, mock_euid):
+        from coreguard.config import Config, Schedule
+        config = Config()
+        config.schedules = [Schedule(name="work"), Schedule(name="night")]
+        mock_config.return_value = config
+        result = self.runner.invoke(main, ["schedule", "remove", "work"])
+        assert result.exit_code == 0
+        assert "removed" in result.output.lower()
+        saved_config = mock_save.call_args[0][0]
+        assert len(saved_config.schedules) == 1
+        assert saved_config.schedules[0].name == "night"
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    def test_schedule_remove_not_found(self, mock_config, mock_euid):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result = self.runner.invoke(main, ["schedule", "remove", "nonexistent"])
+        assert result.exit_code != 0
+        assert "no schedule found" in result.output.lower()
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_schedule_enable_disable(self, mock_pid, mock_save, mock_config, mock_euid):
+        from coreguard.config import Config, Schedule
+        config = Config()
+        config.schedules = [Schedule(name="work", enabled=True)]
+        mock_config.return_value = config
+        result = self.runner.invoke(main, ["schedule", "disable", "work"])
+        assert result.exit_code == 0
+        assert "disabled" in result.output.lower()
+        saved_config = mock_save.call_args[0][0]
+        assert saved_config.schedules[0].enabled is False
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    def test_schedule_add_invalid_time(self, mock_config, mock_euid):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result = self.runner.invoke(main, [
+            "schedule", "add", "--name", "bad",
+            "--start", "not-a-time", "--end", "17:00",
+        ])
+        assert result.exit_code != 0
+        assert "Invalid time" in result.output
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    def test_schedule_add_invalid_day(self, mock_config, mock_euid):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result = self.runner.invoke(main, [
+            "schedule", "add", "--name", "bad",
+            "--start", "09:00", "--end", "17:00",
+            "--days", "monday",
+        ])
+        assert result.exit_code != 0
+        assert "Invalid day" in result.output
+
+
+class TestParentalCLI:
+    def setup_method(self):
+        self.runner = CliRunner()
+        self._ensure_patcher = patch("coreguard.cli.ensure_dirs")
+        self._ensure_patcher.start()
+
+    def teardown_method(self):
+        self._ensure_patcher.stop()
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_safesearch_enable(self, mock_pid, mock_save, mock_config, mock_euid):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result = self.runner.invoke(main, ["parental", "safesearch", "--enable"])
+        assert result.exit_code == 0
+        assert "enabled" in result.output.lower()
+        saved_config = mock_save.call_args[0][0]
+        assert saved_config.safe_search_enabled is True
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_safesearch_disable(self, mock_pid, mock_save, mock_config, mock_euid):
+        from coreguard.config import Config
+        config = Config()
+        config.safe_search_enabled = True
+        mock_config.return_value = config
+        result = self.runner.invoke(main, ["parental", "safesearch", "--disable"])
+        assert result.exit_code == 0
+        assert "disabled" in result.output.lower()
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_categories_add(self, mock_pid, mock_save, mock_config, mock_euid):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result = self.runner.invoke(main, ["parental", "categories", "--add", "adult", "--add", "gambling"])
+        assert result.exit_code == 0
+        saved_config = mock_save.call_args[0][0]
+        assert "adult" in saved_config.content_categories
+        assert "gambling" in saved_config.content_categories
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    @patch("coreguard.cli.save_config")
+    @patch("coreguard.cli.read_pid", return_value=None)
+    def test_categories_remove(self, mock_pid, mock_save, mock_config, mock_euid):
+        from coreguard.config import Config
+        config = Config()
+        config.content_categories = ["adult", "gambling"]
+        mock_config.return_value = config
+        result = self.runner.invoke(main, ["parental", "categories", "--remove", "gambling"])
+        assert result.exit_code == 0
+        saved_config = mock_save.call_args[0][0]
+        assert saved_config.content_categories == ["adult"]
+
+    @patch("coreguard.cli.os.geteuid", return_value=0)
+    @patch("coreguard.cli.load_config")
+    def test_categories_invalid(self, mock_config, mock_euid):
+        from coreguard.config import Config
+        mock_config.return_value = Config()
+        result = self.runner.invoke(main, ["parental", "categories", "--add", "invalid"])
+        assert result.exit_code != 0
+        assert "Unknown category" in result.output

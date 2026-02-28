@@ -403,32 +403,66 @@ def update(ctx):
 
 @main.command()
 @click.argument("domain")
+@click.option("--regex", is_flag=True, help="Treat DOMAIN as a regex pattern")
 @click.pass_context
-def allow(ctx, domain):
+def allow(ctx, domain, regex):
     """Add a domain to the allowlist."""
     _require_root(ctx, "allow")
-    domain = domain.lower().strip(".")
-    with open(CUSTOM_ALLOW_FILE, "a") as f:
-        f.write(domain + "\n")
-    _emit(ctx,
-        {"status": "ok", "domain": domain, "action": "added_to_allowlist"},
-        [f"Added '{domain}' to allowlist.",
-         "Restart coreguard or run 'coreguard update' to apply."])
+    if regex:
+        try:
+            re.compile(domain)
+        except re.error as e:
+            _emit(ctx,
+                {"status": "error", "message": f"Invalid regex: {e}"},
+                [f"Error: Invalid regex pattern: {e}"])
+            ctx.exit(1)
+        entry = f"regex:{domain}"
+        with open(CUSTOM_ALLOW_FILE, "a") as f:
+            f.write(entry + "\n")
+        _emit(ctx,
+            {"status": "ok", "pattern": domain, "action": "added_regex_to_allowlist"},
+            [f"Added regex '{domain}' to allowlist.",
+             "Restart coreguard or run 'coreguard update' to apply."])
+    else:
+        domain = domain.lower().strip(".")
+        with open(CUSTOM_ALLOW_FILE, "a") as f:
+            f.write(domain + "\n")
+        _emit(ctx,
+            {"status": "ok", "domain": domain, "action": "added_to_allowlist"},
+            [f"Added '{domain}' to allowlist.",
+             "Restart coreguard or run 'coreguard update' to apply."])
 
 
 @main.command()
 @click.argument("domain")
+@click.option("--regex", is_flag=True, help="Treat DOMAIN as a regex pattern")
 @click.pass_context
-def block(ctx, domain):
+def block(ctx, domain, regex):
     """Add a domain to the blocklist."""
     _require_root(ctx, "block")
-    domain = domain.lower().strip(".")
-    with open(CUSTOM_BLOCK_FILE, "a") as f:
-        f.write(domain + "\n")
-    _emit(ctx,
-        {"status": "ok", "domain": domain, "action": "added_to_blocklist"},
-        [f"Added '{domain}' to blocklist.",
-         "Restart coreguard or run 'coreguard update' to apply."])
+    if regex:
+        try:
+            re.compile(domain)
+        except re.error as e:
+            _emit(ctx,
+                {"status": "error", "message": f"Invalid regex: {e}"},
+                [f"Error: Invalid regex pattern: {e}"])
+            ctx.exit(1)
+        entry = f"regex:{domain}"
+        with open(CUSTOM_BLOCK_FILE, "a") as f:
+            f.write(entry + "\n")
+        _emit(ctx,
+            {"status": "ok", "pattern": domain, "action": "added_regex_to_blocklist"},
+            [f"Added regex '{domain}' to blocklist.",
+             "Restart coreguard or run 'coreguard update' to apply."])
+    else:
+        domain = domain.lower().strip(".")
+        with open(CUSTOM_BLOCK_FILE, "a") as f:
+            f.write(domain + "\n")
+        _emit(ctx,
+            {"status": "ok", "domain": domain, "action": "added_to_blocklist"},
+            [f"Added '{domain}' to blocklist.",
+             "Restart coreguard or run 'coreguard update' to apply."])
 
 
 def _send_reload_signal() -> bool:
@@ -900,3 +934,244 @@ def uninstall(ctx):
     _emit(ctx,
         {"status": "ok", "message": "Coreguard system service removed. It will no longer start on boot."},
         ["Coreguard system service removed. It will no longer start on boot."])
+
+
+@main.group()
+@click.pass_context
+def parental(ctx):
+    """Parental controls — safe search and content category blocking."""
+    pass
+
+
+@parental.command()
+@click.option("--enable/--disable", required=True, help="Enable or disable safe search")
+@click.pass_context
+def safesearch(ctx, enable):
+    """Enable or disable safe search enforcement via DNS."""
+    _require_root(ctx, "parental safesearch")
+    config = load_config()
+    config.safe_search_enabled = enable
+    save_config(config)
+    reload_sent = _send_reload_signal()
+    action = "enabled" if enable else "disabled"
+    _emit(ctx,
+        {"status": "ok", "safe_search_enabled": enable, "reload_signal_sent": reload_sent},
+        [f"Safe search {action}.",
+         "Reload signal sent." if reload_sent else "Daemon not running. Changes will apply on next start."])
+
+
+@parental.command()
+@click.option("--add", "add_cats", multiple=True, help="Add content category (adult, gambling, social)")
+@click.option("--remove", "remove_cats", multiple=True, help="Remove content category")
+@click.pass_context
+def categories(ctx, add_cats, remove_cats):
+    """Manage content category blocking lists."""
+    _require_root(ctx, "parental categories")
+    from coreguard.safesearch import CONTENT_CATEGORY_LISTS
+    config = load_config()
+
+    for cat in add_cats:
+        if cat not in CONTENT_CATEGORY_LISTS:
+            _emit(ctx,
+                {"status": "error", "message": f"Unknown category '{cat}'. Available: {', '.join(CONTENT_CATEGORY_LISTS)}"},
+                [f"Error: Unknown category '{cat}'. Available: {', '.join(CONTENT_CATEGORY_LISTS)}"])
+            ctx.exit(1)
+        if cat not in config.content_categories:
+            config.content_categories.append(cat)
+
+    for cat in remove_cats:
+        if cat in config.content_categories:
+            config.content_categories.remove(cat)
+
+    save_config(config)
+    reload_sent = _send_reload_signal()
+    _emit(ctx,
+        {"status": "ok", "content_categories": config.content_categories, "reload_signal_sent": reload_sent},
+        [f"Content categories: {', '.join(config.content_categories) if config.content_categories else '(none)'}",
+         "Reload signal sent." if reload_sent else "Daemon not running. Changes will apply on next start."])
+
+
+# --- Schedule management ---
+
+_ALL_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+@main.group()
+@click.pass_context
+def schedule(ctx):
+    """Manage time-based filtering schedules."""
+    pass
+
+
+@schedule.command("list")
+@click.pass_context
+def schedule_list(ctx):
+    """Show all configured schedules."""
+    from coreguard.schedule import is_schedule_active
+
+    config = load_config()
+    json_mode = ctx.obj.get("json")
+
+    if json_mode:
+        items = []
+        for s in config.schedules:
+            items.append({
+                "name": s.name,
+                "start": s.start,
+                "end": s.end,
+                "days": s.days,
+                "block_domains": s.block_domains,
+                "block_patterns": s.block_patterns,
+                "enabled": s.enabled,
+                "active": is_schedule_active(s),
+            })
+        click.echo(json.dumps({"status": "ok", "schedules": items}))
+        return
+
+    if not config.schedules:
+        click.echo("No schedules configured.")
+        click.echo("Add one with: sudo coreguard schedule add --name work --start 09:00 --end 17:00 --domain reddit.com")
+        return
+
+    for s in config.schedules:
+        active = is_schedule_active(s)
+        status_str = click.style("active", fg="green") if active else click.style("inactive", fg="yellow")
+        enabled_str = "" if s.enabled else click.style(" [disabled]", fg="red")
+        click.echo(f"  {s.name}{enabled_str} ({status_str})")
+        click.echo(f"    Time: {s.start} – {s.end}  Days: {', '.join(s.days)}")
+        if s.block_domains:
+            click.echo(f"    Blocked domains: {', '.join(s.block_domains)}")
+        if s.block_patterns:
+            click.echo(f"    Blocked patterns: {', '.join(s.block_patterns)}")
+        click.echo()
+
+
+@schedule.command("add")
+@click.option("--name", required=True, help="Schedule name (unique identifier)")
+@click.option("--start", required=True, help="Start time in HH:MM format (e.g. 09:00)")
+@click.option("--end", required=True, help="End time in HH:MM format (e.g. 17:00)")
+@click.option("--days", default=None, help="Comma-separated days (mon,tue,wed,thu,fri,sat,sun). Defaults to all.")
+@click.option("--domain", "domains", multiple=True, help="Domain to block during schedule (repeatable)")
+@click.option("--pattern", "patterns", multiple=True, help="Wildcard or regex: pattern to block (repeatable)")
+@click.pass_context
+def schedule_add(ctx, name, start, end, days, domains, patterns):
+    """Add a new filtering schedule."""
+    _require_root(ctx, "schedule add")
+    from coreguard.config import Schedule
+    from coreguard.schedule import parse_time
+
+    # Validate times
+    try:
+        parse_time(start)
+        parse_time(end)
+    except (ValueError, IndexError):
+        _emit(ctx,
+            {"status": "error", "message": "Invalid time format. Use HH:MM (e.g. 09:00)."},
+            ["Error: Invalid time format. Use HH:MM (e.g. 09:00)."])
+        ctx.exit(1)
+
+    # Parse days
+    if days:
+        day_list = [d.strip().lower() for d in days.split(",")]
+        for d in day_list:
+            if d not in _ALL_DAYS:
+                _emit(ctx,
+                    {"status": "error", "message": f"Invalid day '{d}'. Use: {', '.join(_ALL_DAYS)}"},
+                    [f"Error: Invalid day '{d}'. Use: {', '.join(_ALL_DAYS)}"])
+                ctx.exit(1)
+    else:
+        day_list = list(_ALL_DAYS)
+
+    config = load_config()
+
+    # Check for duplicate name
+    for s in config.schedules:
+        if s.name == name:
+            _emit(ctx,
+                {"status": "error", "message": f"Schedule '{name}' already exists. Remove it first or use a different name."},
+                [f"Error: Schedule '{name}' already exists."])
+            ctx.exit(1)
+
+    new_schedule = Schedule(
+        name=name,
+        start=start,
+        end=end,
+        days=day_list,
+        block_domains=list(domains),
+        block_patterns=list(patterns),
+        enabled=True,
+    )
+    config.schedules.append(new_schedule)
+    save_config(config)
+    reload_sent = _send_reload_signal()
+
+    _emit(ctx,
+        {"status": "ok", "name": name, "action": "added", "reload_signal_sent": reload_sent},
+        [f"Schedule '{name}' added ({start}–{end}, {', '.join(day_list)}).",
+         f"  Blocking {len(domains)} domain(s), {len(patterns)} pattern(s).",
+         "Reload signal sent." if reload_sent else "Daemon not running. Changes will apply on next start."])
+
+
+@schedule.command("remove")
+@click.argument("name")
+@click.pass_context
+def schedule_remove(ctx, name):
+    """Remove a schedule by name."""
+    _require_root(ctx, "schedule remove")
+    config = load_config()
+    original_count = len(config.schedules)
+    config.schedules = [s for s in config.schedules if s.name != name]
+
+    if len(config.schedules) == original_count:
+        _emit(ctx,
+            {"status": "error", "message": f"No schedule found with name '{name}'."},
+            [f"Error: No schedule found with name '{name}'."])
+        ctx.exit(1)
+
+    save_config(config)
+    reload_sent = _send_reload_signal()
+    _emit(ctx,
+        {"status": "ok", "name": name, "action": "removed", "reload_signal_sent": reload_sent},
+        [f"Schedule '{name}' removed.",
+         "Reload signal sent." if reload_sent else "Daemon not running. Changes will apply on next start."])
+
+
+@schedule.command("enable")
+@click.argument("name")
+@click.pass_context
+def schedule_enable(ctx, name):
+    """Enable a schedule."""
+    _require_root(ctx, "schedule enable")
+    _toggle_schedule(ctx, name, True)
+
+
+@schedule.command("disable")
+@click.argument("name")
+@click.pass_context
+def schedule_disable(ctx, name):
+    """Disable a schedule."""
+    _require_root(ctx, "schedule disable")
+    _toggle_schedule(ctx, name, False)
+
+
+def _toggle_schedule(ctx, name: str, enabled: bool) -> None:
+    config = load_config()
+    found = False
+    for s in config.schedules:
+        if s.name == name:
+            s.enabled = enabled
+            found = True
+            break
+    if not found:
+        _emit(ctx,
+            {"status": "error", "message": f"No schedule found with name '{name}'."},
+            [f"Error: No schedule found with name '{name}'."])
+        ctx.exit(1)
+
+    save_config(config)
+    reload_sent = _send_reload_signal()
+    action = "enabled" if enabled else "disabled"
+    _emit(ctx,
+        {"status": "ok", "name": name, "action": action, "reload_signal_sent": reload_sent},
+        [f"Schedule '{name}' {action}.",
+         "Reload signal sent." if reload_sent else "Daemon not running. Changes will apply on next start."])

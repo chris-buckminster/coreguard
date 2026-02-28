@@ -12,6 +12,7 @@ from coreguard.blocklist import update_all_lists
 from coreguard.config import PID_FILE, STATS_FILE, TEMP_ALLOW_FILE, Config
 from coreguard.filtering import DomainFilter
 from coreguard.network import restore_dns
+from coreguard.schedule import collect_schedule_rules, get_active_schedules
 from coreguard.stats import Stats
 from coreguard.upstream import close_doh_client
 
@@ -132,6 +133,22 @@ def main_loop(
     cache_sweep_interval = 300  # 5 minutes
     temp_check_interval = 60  # 1 minute
 
+    # Schedule tracking
+    active_schedule_names: set[str] = set()
+    domain_filter.snapshot_base()
+
+    # Apply any initially active schedules
+    if config.schedules:
+        try:
+            active = get_active_schedules(config.schedules)
+            if active:
+                active_schedule_names = {s.name for s in active}
+                domains, wildcards, regexes = collect_schedule_rules(active)
+                domain_filter.apply_schedule_overlay(domains, wildcards, regexes)
+                logger.info("Initial schedules active: %s", active_schedule_names)
+        except Exception as e:
+            logger.debug("Initial schedule check failed: %s", e)
+
     while True:
         time.sleep(60)
 
@@ -147,11 +164,39 @@ def main_loop(
             try:
                 logger.info("Reloading filter lists (SIGHUP)...")
                 update_all_lists(config, domain_filter)
+                domain_filter.snapshot_base()
+                # Re-apply active schedules after reload
+                if config.schedules:
+                    active = get_active_schedules(config.schedules)
+                    if active:
+                        domains, wildcards, regexes = collect_schedule_rules(active)
+                        domain_filter.apply_schedule_overlay(domains, wildcards, regexes)
+                        active_schedule_names = {s.name for s in active}
                 if cache:
                     cache.clear()
                     logger.info("Cache cleared after reload")
             except Exception as e:
                 logger.warning("Reload failed: %s", e)
+
+        # Check schedule transitions
+        if config.schedules:
+            try:
+                active = get_active_schedules(config.schedules)
+                new_names = {s.name for s in active}
+                if new_names != active_schedule_names:
+                    logger.info(
+                        "Schedule transition: %s -> %s",
+                        active_schedule_names, new_names,
+                    )
+                    domain_filter.restore_base()
+                    if active:
+                        domains, wildcards, regexes = collect_schedule_rules(active)
+                        domain_filter.apply_schedule_overlay(domains, wildcards, regexes)
+                    active_schedule_names = new_names
+                    if cache:
+                        cache.clear()
+            except Exception as e:
+                logger.debug("Schedule check failed: %s", e)
 
         # Check for expired temp-allow entries
         if (time.time() - last_temp_check) >= temp_check_interval:

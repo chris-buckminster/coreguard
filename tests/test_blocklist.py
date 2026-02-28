@@ -93,24 +93,47 @@ class TestLoadCustomList:
     def test_loads_domains(self, tmp_path):
         f = tmp_path / "custom.txt"
         f.write_text("foo.com\nbar.org\n# comment\n")
-        domains, wildcards = load_custom_list(f)
+        domains, wildcards, regexes = load_custom_list(f)
         assert domains == {"foo.com", "bar.org"}
         assert wildcards == []
+        assert regexes == []
 
     def test_missing_file(self, tmp_path):
         f = tmp_path / "missing.txt"
-        domains, wildcards = load_custom_list(f)
+        domains, wildcards, regexes = load_custom_list(f)
         assert domains == set()
         assert wildcards == []
+        assert regexes == []
 
     def test_separates_wildcards(self, tmp_path):
         f = tmp_path / "custom.txt"
         f.write_text("foo.com\n*.ads.com\nad*.example.com\nbar.org\n")
-        domains, wildcards = load_custom_list(f)
+        domains, wildcards, regexes = load_custom_list(f)
         assert domains == {"foo.com", "bar.org"}
         assert "*.ads.com" in wildcards
         assert "ad*.example.com" in wildcards
         assert len(wildcards) == 2
+        assert regexes == []
+
+    def test_separates_regex_entries(self, tmp_path):
+        f = tmp_path / "custom.txt"
+        f.write_text("foo.com\nregex:^ads\\..*\\.com$\n*.wild.com\nregex:track(er|ing)\n")
+        domains, wildcards, regexes = load_custom_list(f)
+        assert domains == {"foo.com"}
+        assert wildcards == ["*.wild.com"]
+        assert regexes == [r"^ads\..*\.com$", r"track(er|ing)"]
+
+    def test_regex_preserves_case(self, tmp_path):
+        f = tmp_path / "custom.txt"
+        f.write_text("regex:^ADS\\.COM$\n")
+        _, _, regexes = load_custom_list(f)
+        assert regexes == [r"^ADS\.COM$"]
+
+    def test_empty_regex_skipped(self, tmp_path):
+        f = tmp_path / "custom.txt"
+        f.write_text("regex:\nregex:^valid$\n")
+        _, _, regexes = load_custom_list(f)
+        assert regexes == [r"^valid$"]
 
 
 class TestLoadTempAllowList:

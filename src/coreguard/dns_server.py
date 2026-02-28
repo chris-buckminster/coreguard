@@ -8,6 +8,7 @@ from coreguard.cache import DNSCache
 from coreguard.config import Config
 from coreguard.filtering import DomainFilter
 from coreguard.logging_config import QueryLogger
+from coreguard.safesearch import get_safe_search_target, make_safe_search_response
 from coreguard.stats import Stats
 from coreguard.upstream import resolve_upstream
 
@@ -38,6 +39,19 @@ class BlockingResolver(BaseResolver):
         qtype = QTYPE[request.q.qtype]
         qtype_int = request.q.qtype
         client_ip = handler.client_address[0] if handler else None
+
+        # 0. Safe search CNAME rewrite (if enabled and domain matches)
+        if self.config.safe_search_enabled:
+            target = get_safe_search_target(
+                qname, self.config.safe_search_youtube_restrict
+            )
+            if target:
+                reply = make_safe_search_response(request, target)
+                self.stats.record_query(qname, blocked=False, qtype=qtype, client_ip=client_ip)
+                self.query_logger.log_query(qname, qtype, blocked=False, client_ip=client_ip)
+                if self.on_query:
+                    self.on_query(qname, qtype, False, client_ip)
+                return reply
 
         # 1. Check blocklist (always checked first so new blocks take effect immediately)
         if self.filter.is_blocked(qname):

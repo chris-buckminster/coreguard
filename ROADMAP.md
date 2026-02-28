@@ -67,16 +67,25 @@
 - [x] Server-Sent Events for real-time query streaming (`/api/stream`)
 - [x] SQLite-backed query logging (`query_db.py`) with batched writes, retention, log import
 
-**Regex-based blocking rules**
-- [ ] Custom rules beyond wildcards
+**Regex-based blocking rules** *(done)*
+- [x] Custom rules beyond wildcards (`regex:` prefix in custom list files)
+- [x] `--regex` flag on `block` and `allow` CLI commands
+- [x] Dashboard support for regex entries
 
-**Time-based / scheduled filtering**
-- [ ] Stricter or looser blocking on a schedule
+**Time-based / scheduled filtering** *(done)*
+- [x] `Schedule` config with time windows, day-of-week, and block rules
+- [x] Overnight schedule support (e.g. 21:00–06:00)
+- [x] Snapshot/restore filter state with schedule overlay
+- [x] Automatic schedule transitions in daemon main loop
 
-**Parental controls / safe search**
-- [ ] Enforce SafeSearch on Google, YouTube, Bing via DNS-level rewrites
-- [ ] Optional content category blocking (adult, gambling, etc.)
-- [ ] Configurable per-profile if device profiles are added later
+**Parental controls / safe search** *(done)*
+- [x] Enforce SafeSearch on Google, YouTube, Bing, DuckDuckGo via DNS CNAME rewrites
+- [x] YouTube moderate/strict restriction modes
+- [x] Google country variant support (www.google.co.uk, www.google.de, etc.)
+- [x] Optional content category blocking (adult, gambling, social)
+- [x] `coreguard parental safesearch --enable/--disable` CLI command
+- [x] `coreguard parental categories --add/--remove` CLI command
+- [x] Dashboard `/api/parental` endpoint for toggling settings
 
 ---
 

@@ -37,6 +37,9 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **DNS response caching** — local TTL-aware cache makes repeat queries near-instant
 - **CNAME flattening** — detects and blocks trackers that hide behind CNAME cloaking
 - **Wildcard rules** — pattern matching in custom lists (`*.ads.com`, `ad*.example.com`)
+- **Regex rules** — full regular expression support for custom blocking and allow rules (`regex:^ads\..*\.com$`)
+- **Scheduled filtering** — time-based blocking rules that activate on specific days and hours, with overnight span support
+- **Parental controls** — enforce SafeSearch on Google, YouTube, Bing, and DuckDuckGo via DNS CNAME rewrites, plus content category blocking (adult, gambling, social)
 - **11 filter list sources** — ships with curated lists covering ads, trackers, malware, and phishing
 - **Automatic updates** — filter lists refresh every 24 hours (configurable)
 - **Allowlist and blocklist** — per-domain overrides with a single command
@@ -48,7 +51,7 @@ This approach blocks ads and trackers system-wide — across every browser and a
 - **VPN-safe** — only modifies DNS on physical interfaces (Wi-Fi, Ethernet, USB), leaving VPN tunnels untouched
 - **Self-healing DNS** — automatically re-applies DNS settings after sleep/wake or network changes (checked every 60 seconds)
 - **Live query logging** — see exactly what's being blocked in real time
-- **Web dashboard** — full management UI at `http://127.0.0.1:8080` — view stats, manage domains, toggle filter lists, trigger updates, and stop the daemon from the browser
+- **Web dashboard** — full management UI at `http://127.0.0.1:8080` — view stats, manage domains, toggle filter lists, configure schedules, manage parental controls, and stop the daemon from the browser
 - **JSON output** — `--json` flag on every command for scripting and automation (`coreguard status --json | jq`)
 - **Statistics** — track total queries, block rate, cache hit rate, and top blocked domains
 - **Graceful DNS restore** — original DNS settings are backed up and restored on stop
@@ -185,6 +188,117 @@ tracking.*.cdn.net     # Matches tracking.us.cdn.net, tracking.eu.cdn.net
 
 Leading `*.` matches any number of subdomain labels. A `*` elsewhere matches within a single DNS label (no dots). Plain entries without `*` work exactly as before.
 
+### Regex Rules
+
+For more complex patterns, use regular expressions with the `--regex` flag:
+
+```bash
+# Block all domains matching a regex pattern
+sudo coreguard block --regex "^ads\..*\.com$"
+
+# Allow domains matching a regex pattern
+sudo coreguard allow --regex "cdn[0-9]+\.example\.com"
+```
+
+Regex patterns are stored with a `regex:` prefix in the custom list files. You can also add them directly:
+
+```
+# In custom-block.txt or custom-allow.txt
+regex:^ads\..*\.com$
+regex:track(er|ing)\.\w+\.net$
+```
+
+Regex matching is case-insensitive and uses `re.search()`, so patterns can match any part of the domain name. Invalid patterns are silently skipped during list loading.
+
+### Scheduled Filtering
+
+Block specific domains during certain hours and days of the week. Useful for work-hour focus rules or bedtime restrictions.
+
+```bash
+# Add a schedule (blocks Reddit and Twitter during work hours)
+sudo coreguard schedule add --name work-hours \
+  --start 09:00 --end 17:00 \
+  --days mon,tue,wed,thu,fri \
+  --domain reddit.com --domain twitter.com
+
+# Add an overnight schedule (wildcards and regex patterns supported)
+sudo coreguard schedule add --name bedtime \
+  --start 22:00 --end 06:00 \
+  --pattern "*.tiktok.com" --pattern "regex:.*\.social$"
+
+# List all schedules
+coreguard schedule list
+
+# Enable or disable a schedule
+sudo coreguard schedule enable work-hours
+sudo coreguard schedule disable work-hours
+
+# Remove a schedule
+sudo coreguard schedule remove work-hours
+```
+
+When `--days` is omitted, the schedule applies to all seven days. Overnight spans (start > end, e.g. 22:00–06:00) are handled automatically.
+
+Schedules can also be configured directly in `config.toml`:
+
+```toml
+[[schedules]]
+name = "work-hours"
+start = "09:00"
+end = "17:00"
+days = ["mon", "tue", "wed", "thu", "fri"]
+block_domains = ["reddit.com", "twitter.com"]
+block_patterns = ["*.tiktok.com"]
+enabled = true
+```
+
+The daemon checks active schedules every 60 seconds. When a schedule activates or deactivates, filter rules and cache are updated automatically.
+
+### Parental Controls
+
+Enforce safe search across major search engines and block content by category.
+
+#### Safe Search
+
+When enabled, DNS queries for search engines are rewritten to their safe variants via CNAME responses:
+
+| Domain | Redirected To |
+|--------|---------------|
+| www.google.com (+ country variants) | forcesafesearch.google.com |
+| www.youtube.com | restrict.youtube.com (moderate) or restrictmoderate.youtube.com (strict) |
+| www.bing.com | strict.bing.com |
+| duckduckgo.com | safe.duckduckgo.com |
+
+```bash
+# Enable safe search
+sudo coreguard parental safesearch --enable
+
+# Disable safe search
+sudo coreguard parental safesearch --disable
+```
+
+YouTube restriction level can be set in `config.toml`:
+
+```toml
+[parental]
+safe_search_enabled = true
+safe_search_youtube_restrict = "moderate"  # "moderate" or "strict"
+```
+
+#### Content Categories
+
+Block entire categories of content using curated blocklists:
+
+```bash
+# Add content categories to block
+sudo coreguard parental categories --add adult --add gambling
+
+# Remove a category
+sudo coreguard parental categories --remove social
+```
+
+Available categories: `adult`, `gambling`, `social`. Category lists are downloaded and merged with your existing filter lists on the next update.
+
 ### Filter Lists
 
 ```bash
@@ -218,12 +332,14 @@ The `doctor` command checks:
 
 ### Dashboard
 
-When coreguard is running, a web dashboard is available at `http://127.0.0.1:8080`. It provides a full management UI with five tabs:
+When coreguard is running, a web dashboard is available at `http://127.0.0.1:8080`. It provides a full management UI with seven tabs:
 
 - **Overview** — stat cards (total queries, blocked count, block rate, cache hit rate, cache size, CNAME blocks), top blocked/queried domain tables
 - **Queries** — searchable, filterable query log with status badges
-- **Domains** — add/remove allowlist and blocklist entries, create temporary allows with a duration
+- **Domains** — add/remove allowlist and blocklist entries (plain, wildcard, or regex), create temporary allows with a duration
 - **Lists** — enable/disable filter lists, add/remove list sources, trigger updates
+- **Schedules** — view, add, enable/disable, and remove time-based blocking schedules
+- **Parental** — toggle safe search, set YouTube restriction level, enable/disable content category blocking
 - **Settings** — view configuration, clear DNS cache, copy dashboard token, stop daemon
 
 The dashboard auto-refreshes every 5 seconds and runs on localhost only.
@@ -409,6 +525,21 @@ log_max_size_mb = 50
 [dashboard]
 enabled = true
 port = 8080              # Web dashboard port
+
+[parental]
+safe_search_enabled = false
+safe_search_youtube_restrict = "moderate"   # "moderate" or "strict"
+content_categories = []                     # ["adult", "gambling", "social"]
+
+# Time-based blocking schedules (optional, repeatable)
+# [[schedules]]
+# name = "work-hours"
+# start = "09:00"
+# end = "17:00"
+# days = ["mon", "tue", "wed", "thu", "fri"]
+# block_domains = ["reddit.com", "twitter.com"]
+# block_patterns = ["*.tiktok.com"]
+# enabled = true
 ```
 
 ### Upstream DNS Options

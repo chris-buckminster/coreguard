@@ -106,3 +106,109 @@ class TestWildcardRules:
         self.f.load_blocklist_wildcards(["*.ADS.COM"])
         assert self.f.is_blocked("foo.ads.com") is True
         assert self.f.is_blocked("FOO.ADS.COM") is True
+
+
+class TestRegexRules:
+    def setup_method(self):
+        self.f = DomainFilter()
+
+    def test_basic_regex_match(self):
+        """Regex patterns match domains."""
+        self.f.load_blocklist_regex([r"^ads\..*\.com$"])
+        assert self.f.is_blocked("ads.example.com") is True
+        assert self.f.is_blocked("ads.foo.com") is True
+        assert self.f.is_blocked("notads.example.com") is False
+
+    def test_regex_allow_overrides_block(self):
+        """Regex allowlist takes priority over regex blocklist."""
+        self.f.load_blocklist_regex([r"track(er|ing)\.\w+\.net$"])
+        self.f.load_allowlist_regex([r"tracker\.safe\.net$"])
+        assert self.f.is_blocked("tracker.bad.net") is True
+        assert self.f.is_blocked("tracking.spy.net") is True
+        assert self.f.is_blocked("tracker.safe.net") is False
+
+    def test_invalid_regex_skipped(self):
+        """Invalid regex patterns are silently skipped."""
+        self.f.load_blocklist_regex([r"[invalid", r"^valid\.com$"])
+        assert self.f.is_blocked("valid.com") is True
+        assert self.f.regex_count == 1  # only the valid one
+
+    def test_regex_case_insensitive(self):
+        """Regex matching is case-insensitive."""
+        self.f.load_blocklist_regex([r"^ADS\.EXAMPLE\.COM$"])
+        assert self.f.is_blocked("ads.example.com") is True
+        assert self.f.is_blocked("ADS.EXAMPLE.COM") is True
+
+    def test_clear_resets_regex(self):
+        """clear() removes regex patterns too."""
+        self.f.load_blocklist_regex([r"^ads\..*\.com$"])
+        assert self.f.is_blocked("ads.foo.com") is True
+        self.f.clear()
+        assert self.f.is_blocked("ads.foo.com") is False
+        assert self.f.regex_count == 0
+
+    def test_regex_with_plain_and_wildcard(self):
+        """Regex, plain, and wildcard rules work together."""
+        self.f.load_blocklist(["exact.com"])
+        self.f.load_blocklist_wildcards(["*.wild.com"])
+        self.f.load_blocklist_regex([r"^regex\d+\.com$"])
+        assert self.f.is_blocked("exact.com") is True
+        assert self.f.is_blocked("foo.wild.com") is True
+        assert self.f.is_blocked("regex123.com") is True
+        assert self.f.is_blocked("clean.com") is False
+
+    def test_regex_count_property(self):
+        """regex_count returns total of blocked + allowed regex patterns."""
+        self.f.load_blocklist_regex([r"^a\.com$", r"^b\.com$"])
+        self.f.load_allowlist_regex([r"^c\.com$"])
+        assert self.f.regex_count == 3
+
+
+class TestScheduleOverlay:
+    def setup_method(self):
+        self.f = DomainFilter()
+
+    def test_snapshot_restore_preserves_base(self):
+        """snapshot_base() and restore_base() preserve the original state."""
+        self.f.load_blocklist(["base.com"])
+        self.f.load_blocklist_wildcards(["*.base-wild.com"])
+        self.f.load_blocklist_regex([r"^base-regex\.com$"])
+        self.f.snapshot_base()
+
+        # Add overlay
+        self.f.load_blocklist(["overlay.com"])
+        assert self.f.is_blocked("overlay.com") is True
+
+        # Restore should remove overlay
+        self.f.restore_base()
+        assert self.f.is_blocked("base.com") is True
+        assert self.f.is_blocked("foo.base-wild.com") is True
+        assert self.f.is_blocked("base-regex.com") is True
+        assert self.f.is_blocked("overlay.com") is False
+
+    def test_apply_schedule_overlay_adds_blocks(self):
+        """apply_schedule_overlay adds domains on top of base."""
+        self.f.load_blocklist(["base.com"])
+        self.f.snapshot_base()
+
+        self.f.apply_schedule_overlay(
+            ["schedule-block.com"],
+            ["*.schedule-wild.com"],
+            [r"^schedule-regex\.com$"],
+        )
+        assert self.f.is_blocked("base.com") is True
+        assert self.f.is_blocked("schedule-block.com") is True
+        assert self.f.is_blocked("foo.schedule-wild.com") is True
+        assert self.f.is_blocked("schedule-regex.com") is True
+
+    def test_restore_removes_overlay(self):
+        """restore_base() removes schedule overlay blocks."""
+        self.f.load_blocklist(["base.com"])
+        self.f.snapshot_base()
+
+        self.f.apply_schedule_overlay(["overlay.com"], [], [])
+        assert self.f.is_blocked("overlay.com") is True
+
+        self.f.restore_base()
+        assert self.f.is_blocked("overlay.com") is False
+        assert self.f.is_blocked("base.com") is True

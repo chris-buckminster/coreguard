@@ -220,25 +220,32 @@ def download_list(url: str, timeout: float = 30.0) -> str:
             return response.text
 
 
-def load_custom_list(path: Path) -> tuple[set[str], list[str]]:
+def load_custom_list(path: Path) -> tuple[set[str], list[str], list[str]]:
     """Load a custom allow/block list (one domain per line).
 
-    Returns (plain_domains, wildcard_patterns). Entries containing '*'
-    are treated as wildcard patterns.
+    Returns (plain_domains, wildcard_patterns, regex_patterns).
+    Lines starting with 'regex:' are treated as regex patterns.
+    Entries containing '*' are treated as wildcard patterns.
     """
     if not path.exists():
-        return set(), []
+        return set(), [], []
     domains: set[str] = set()
     wildcards: list[str] = []
+    regexes: list[str] = []
     for line in path.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
-            entry = line.lower().strip(".")
-            if "*" in entry:
-                wildcards.append(entry)
+            if line.startswith("regex:"):
+                pattern = line[6:]  # preserve case for regex
+                if pattern:
+                    regexes.append(pattern)
             else:
-                domains.add(entry)
-    return domains, wildcards
+                entry = line.lower().strip(".")
+                if "*" in entry:
+                    wildcards.append(entry)
+                else:
+                    domains.add(entry)
+    return domains, wildcards, regexes
 
 
 def load_temp_allow_list(path: Path) -> set[str]:
@@ -294,8 +301,8 @@ def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
         logger.info("Parsed %s: %d blocked, %d allowed", name, len(blocked), len(allowed))
 
     # Load custom user lists
-    custom_blocked, blocked_wildcards = load_custom_list(CUSTOM_BLOCK_FILE)
-    custom_allowed, allowed_wildcards = load_custom_list(CUSTOM_ALLOW_FILE)
+    custom_blocked, blocked_wildcards, blocked_regexes = load_custom_list(CUSTOM_BLOCK_FILE)
+    custom_allowed, allowed_wildcards, allowed_regexes = load_custom_list(CUSTOM_ALLOW_FILE)
     all_blocked.update(custom_blocked)
     all_allowed.update(custom_allowed)
 
@@ -309,6 +316,33 @@ def update_all_lists(config: Config, domain_filter: DomainFilter) -> int:
     domain_filter.load_allowlist(all_allowed)
     domain_filter.load_blocklist_wildcards(blocked_wildcards)
     domain_filter.load_allowlist_wildcards(allowed_wildcards)
+    domain_filter.load_blocklist_regex(blocked_regexes)
+    domain_filter.load_allowlist_regex(allowed_regexes)
+
+    # Load content category lists (parental controls)
+    if config.content_categories:
+        from coreguard.safesearch import CONTENT_CATEGORY_LISTS
+        for category in config.content_categories:
+            url = CONTENT_CATEGORY_LISTS.get(category)
+            if not url:
+                continue
+            cache_name = f"category-{category}"
+            cache_path = BLOCKLISTS_DIR / _sanitize_filename(cache_name)
+            try:
+                logger.info("Downloading content category list: %s", category)
+                content = download_list(url)
+                cache_path.write_text(content)
+            except Exception as e:
+                logger.warning("Failed to download category %s: %s", category, e)
+                if cache_path.exists():
+                    content = cache_path.read_text()
+                else:
+                    continue
+            blocked, allowed = detect_and_parse(content)
+            all_blocked.update(blocked)
+            logger.info("Category %s: %d domains", category, len(blocked))
+        # Re-apply after adding category domains
+        domain_filter.load_blocklist(all_blocked - domain_filter._blocked)
 
     logger.info(
         "Filter loaded: %d blocked domains, %d allowed domains",

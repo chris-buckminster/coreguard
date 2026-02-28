@@ -81,6 +81,17 @@ DEFAULT_FILTER_LISTS = [
 
 
 @dataclass
+class Schedule:
+    name: str = ""
+    start: str = "00:00"       # HH:MM 24h
+    end: str = "23:59"         # HH:MM 24h
+    days: list[str] = field(default_factory=lambda: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"])
+    block_domains: list[str] = field(default_factory=list)
+    block_patterns: list[str] = field(default_factory=list)  # wildcards or regex: prefixed
+    enabled: bool = True
+
+
+@dataclass
 class UpstreamProvider:
     name: str = "cloudflare"
     doh: str = "https://1.1.1.1/dns-query"
@@ -134,6 +145,14 @@ class Config:
     # Query database
     query_db_retention_days: int = 7
 
+    # Schedules
+    schedules: list = field(default_factory=list)
+
+    # Parental controls
+    safe_search_enabled: bool = False
+    safe_search_youtube_restrict: str = "moderate"  # "moderate" or "strict"
+    content_categories: list[str] = field(default_factory=list)
+
 
 def ensure_dirs() -> None:
     """Create all required directories and files."""
@@ -180,6 +199,23 @@ def _config_to_dict(config: Config) -> dict[str, Any]:
             "enabled": config.dashboard_enabled,
             "port": config.dashboard_port,
             "token": config.dashboard_token,
+        },
+        "schedules": [
+            {
+                "name": s.name,
+                "start": s.start,
+                "end": s.end,
+                "days": s.days,
+                "block_domains": s.block_domains,
+                "block_patterns": s.block_patterns,
+                "enabled": s.enabled,
+            }
+            for s in config.schedules
+        ],
+        "parental": {
+            "safe_search_enabled": config.safe_search_enabled,
+            "safe_search_youtube_restrict": config.safe_search_youtube_restrict,
+            "content_categories": config.content_categories,
         },
     }
 
@@ -239,6 +275,26 @@ def _dict_to_config(data: dict[str, Any]) -> Config:
         config.dashboard_enabled = db.get("enabled", config.dashboard_enabled)
         config.dashboard_port = db.get("port", config.dashboard_port)
         config.dashboard_token = db.get("token", config.dashboard_token)
+    if "schedules" in data:
+        config.schedules = [
+            Schedule(
+                name=s.get("name", ""),
+                start=s.get("start", "00:00"),
+                end=s.get("end", "23:59"),
+                days=s.get("days", ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]),
+                block_domains=s.get("block_domains", []),
+                block_patterns=s.get("block_patterns", []),
+                enabled=s.get("enabled", True),
+            )
+            for s in data["schedules"]
+        ]
+    if "parental" in data:
+        p = data["parental"]
+        config.safe_search_enabled = p.get("safe_search_enabled", config.safe_search_enabled)
+        config.safe_search_youtube_restrict = p.get(
+            "safe_search_youtube_restrict", config.safe_search_youtube_restrict
+        )
+        config.content_categories = p.get("content_categories", config.content_categories)
     return config
 
 
