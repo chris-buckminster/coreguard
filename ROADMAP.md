@@ -119,25 +119,25 @@
 
 ---
 
-## Phase 5.5 — Dashboard polish
+## Phase 5.5 — Dashboard polish *(done)*
 
-**Live updates**
-- [ ] Stat cards and query feed refresh every 1 second
-- [ ] Charts refresh every 5 seconds
-- [ ] Use existing SSE stream and periodic fetch
+**Live updates** *(done)*
+- [x] Stat cards and query feed refresh every 1 second
+- [x] Charts refresh every 5 seconds
+- [x] Use existing SSE stream and periodic fetch
 
-**Dark / light mode**
-- [ ] Auto-detect system preference via `prefers-color-scheme`
-- [ ] Manual toggle with localStorage persistence
-- [ ] Full theme coverage across all dashboard elements
+**Dark / light mode** *(done)*
+- [x] Auto-detect system preference via `prefers-color-scheme`
+- [x] Manual toggle with localStorage persistence
+- [x] Full theme coverage across all dashboard elements
 
-**Visual refresh**
-- [ ] Clean, modern design pass (typography, spacing, color palette, card layout)
-- [ ] Single-file architecture preserved (all HTML/CSS/JS inline)
+**Visual refresh** *(done)*
+- [x] Clean, modern design pass (typography, spacing, color palette, card layout)
+- [x] Single-file architecture preserved (all HTML/CSS/JS inline)
 
-**Built-in Help tab**
-- [ ] User-friendly guide inside the dashboard for non-power users
-- [ ] Explains what coreguard does and how to use each feature
+**Built-in Help tab** *(done)*
+- [x] User-friendly guide inside the dashboard for non-power users
+- [x] Explains what coreguard does and how to use each feature
 
 ---
 

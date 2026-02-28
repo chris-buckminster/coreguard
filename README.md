@@ -334,17 +334,18 @@ The `doctor` command checks:
 
 ### Dashboard
 
-When coreguard is running, a web dashboard is available at `http://127.0.0.1:8080`. It provides a full management UI with seven tabs:
+When coreguard is running, a web dashboard is available at `http://127.0.0.1:8080`. It provides a full management UI with eight tabs:
 
-- **Overview** — stat cards (total queries, blocked count, block rate, cache hit rate, cache size, CNAME blocks), top blocked/queried domain tables
-- **Queries** — searchable, filterable query log with status badges
+- **Overview** — stat cards (total queries, blocked count, block rate, cache hit rate, cache size, CNAME blocks), 24-hour history chart, query type donut chart, top blocked/queried domains, top clients
+- **Queries** — searchable, filterable query log with status badges, real-time streaming via SSE
 - **Domains** — add/remove allowlist and blocklist entries (plain, wildcard, or regex), create temporary allows with a duration
 - **Lists** — enable/disable filter lists, add/remove list sources, trigger updates
 - **Schedules** — view, add, enable/disable, and remove time-based blocking schedules
 - **Parental** — toggle safe search, set YouTube restriction level, enable/disable content category blocking
 - **Settings** — view configuration, clear DNS cache, copy dashboard token, stop daemon
+- **Help** — built-in guide explaining how coreguard works, how to use each feature, and troubleshooting tips
 
-The dashboard auto-refreshes every 5 seconds and runs on localhost only.
+The dashboard supports **dark and light themes** (toggle in the header, or auto-detects your system preference). Stat cards update every 1 second; charts and tables refresh every 5 seconds. Runs on localhost only.
 
 #### Authentication
 

@@ -1060,27 +1060,63 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Coreguard Dashboard</title>
+<script>(function(){var t=localStorage.getItem('cg_theme');if(t==='light'||((!t||t==='auto')&&window.matchMedia('(prefers-color-scheme: light)').matches))document.documentElement.setAttribute('data-theme','light');})();</script>
 <style>
+  :root {
+    --bg-page: #0d1117;      --bg-card: #161b22;       --bg-card-hover: #1c2128;
+    --bg-input: #0d1117;     --bg-btn: #21262d;        --bg-btn-hover: #30363d;
+    --bg-overlay: rgba(0,0,0,0.8);  --bg-tooltip: #1c2128;
+    --border-primary: #30363d;       --border-subtle: #21262d;
+    --text-primary: #c9d1d9;  --text-secondary: #8b949e;
+    --text-muted: #484f58;    --text-bright: #f0f6fc;
+    --accent: #58a6ff;
+    --green: #3fb950;  --green-btn: #238636;  --green-btn-hover: #2ea043;
+    --red: #f85149;    --red-btn: #da3633;
+    --orange: #f0883e; --orange-light: #ffa657; --purple: #d2a8ff;
+    --shadow-card: 0 1px 3px rgba(0,0,0,0.3);
+    --shadow-card-hover: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  [data-theme="light"] {
+    --bg-page: #f6f8fa;       --bg-card: #ffffff;       --bg-card-hover: #f3f4f6;
+    --bg-input: #ffffff;      --bg-btn: #f3f4f6;        --bg-btn-hover: #e5e7eb;
+    --bg-overlay: rgba(0,0,0,0.4);  --bg-tooltip: #ffffff;
+    --border-primary: #d0d7de;       --border-subtle: #e5e7eb;
+    --text-primary: #1f2328;  --text-secondary: #656d76;
+    --text-muted: #8b949e;    --text-bright: #1f2328;
+    --accent: #0969da;
+    --green: #1a7f37;  --green-btn: #1a7f37;  --green-btn-hover: #2da44e;
+    --red: #cf222e;    --red-btn: #cf222e;
+    --shadow-card: 0 1px 3px rgba(0,0,0,0.08);
+    --shadow-card-hover: 0 4px 12px rgba(0,0,0,0.12);
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    background: #0d1117; color: #c9d1d9; max-width: 1200px; margin: 0 auto; padding: 0;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg-page); color: var(--text-primary); max-width: 1200px; margin: 0 auto; padding: 0;
+    line-height: 1.5; transition: background 0.3s, color 0.3s;
   }
   code, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; }
 
   /* --- Header --- */
   .header { padding: 20px 24px 0; display: flex; align-items: center; justify-content: space-between; }
-  .header h1 { color: #58a6ff; font-size: 22px; }
-  .header .subtitle { color: #8b949e; font-size: 13px; }
+  .header h1 { color: var(--accent); font-size: 22px; }
+  .header .subtitle { color: var(--text-secondary); font-size: 13px; }
+  .theme-toggle {
+    background: var(--bg-btn); border: 1px solid var(--border-primary); border-radius: 6px;
+    padding: 5px 8px; cursor: pointer; color: var(--text-secondary); display: flex;
+    align-items: center; transition: all 0.15s ease;
+  }
+  .theme-toggle:hover { background: var(--bg-btn-hover); color: var(--text-primary); }
+  .theme-toggle svg { width: 16px; height: 16px; }
 
   /* --- Tabs --- */
-  .tabs { display: flex; gap: 0; padding: 16px 24px 0; border-bottom: 1px solid #30363d; }
+  .tabs { display: flex; gap: 0; padding: 16px 24px 0; border-bottom: 1px solid var(--border-primary); transition: border-color 0.3s; }
   .tab {
-    padding: 8px 16px; cursor: pointer; color: #8b949e; font-size: 14px;
-    border-bottom: 2px solid transparent; transition: color 0.2s; position: relative;
+    padding: 10px 18px; cursor: pointer; color: var(--text-secondary); font-size: 14px;
+    border-bottom: 2px solid transparent; transition: color 0.2s, border-color 0.2s; position: relative;
   }
-  .tab:hover { color: #c9d1d9; }
-  .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+  .tab:hover { color: var(--text-primary); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
   .tab-content { display: none; padding: 24px; }
   .tab-content.active { display: block; }
@@ -1088,17 +1124,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   /* --- Cards --- */
   .cards {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-    gap: 12px; margin-bottom: 24px;
+    gap: 16px; margin-bottom: 24px;
   }
   .card {
-    background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px;
-    position: relative; overflow: hidden;
+    background: var(--bg-card); border: 1px solid var(--border-primary); border-radius: 10px; padding: 20px;
+    position: relative; overflow: hidden; box-shadow: var(--shadow-card);
+    transition: all 0.15s ease;
   }
-  .card .label { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .card .value { font-size: 26px; font-weight: 600; color: #f0f6fc; margin-top: 4px; }
-  .card .value.green { color: #3fb950; }
-  .card .value.red { color: #f85149; }
-  .card .value.blue { color: #58a6ff; }
+  .card:hover { box-shadow: var(--shadow-card-hover); transform: translateY(-1px); }
+  .card .label { color: var(--text-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .card .value { font-size: 28px; font-weight: 600; color: var(--text-bright); margin-top: 4px; }
+  .card .value.green { color: var(--green); }
+  .card .value.red { color: var(--red); }
+  .card .value.blue { color: var(--accent); }
   .card canvas.sparkline {
     position: absolute; bottom: 4px; right: 8px; width: 60px; height: 20px; opacity: 0.6;
   }
@@ -1108,152 +1146,155 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   @media (max-width: 700px) { .tables { grid-template-columns: 1fr; } }
   .section { margin-bottom: 24px; }
   .section h2 {
-    font-size: 14px; color: #8b949e; margin-bottom: 8px;
+    font-size: 14px; color: var(--text-secondary); margin-bottom: 8px;
     text-transform: uppercase; letter-spacing: 0.5px;
   }
   table {
-    width: 100%; border-collapse: collapse; background: #161b22;
-    border: 1px solid #30363d; border-radius: 8px; overflow: hidden;
+    width: 100%; border-collapse: collapse; background: var(--bg-card);
+    border: 1px solid var(--border-primary); border-radius: 10px; overflow: hidden;
   }
   th {
-    text-align: left; padding: 8px 12px; color: #8b949e;
-    font-size: 11px; text-transform: uppercase; border-bottom: 1px solid #30363d;
+    text-align: left; padding: 8px 12px; color: var(--text-secondary);
+    font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--border-primary);
   }
-  td { padding: 6px 12px; font-size: 13px; border-bottom: 1px solid #21262d; }
+  td { padding: 6px 12px; font-size: 13px; border-bottom: 1px solid var(--border-subtle); }
   tr:last-child td { border-bottom: none; }
   .badge {
     display: inline-block; padding: 2px 8px; border-radius: 4px;
     font-size: 11px; font-weight: 600;
   }
-  .badge.blocked { background: #f8514922; color: #f85149; }
-  .badge.allowed { background: #3fb95022; color: #3fb950; }
+  .badge.blocked { background: rgba(248,81,73,0.13); color: var(--red); }
+  .badge.allowed { background: rgba(63,185,80,0.13); color: var(--green); }
   .domain {
     max-width: 400px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px;
   }
   .domain.clickable { cursor: pointer; }
-  .domain.clickable:hover { color: #58a6ff; text-decoration: underline; }
+  .domain.clickable:hover { color: var(--accent); text-decoration: underline; }
   .scroll-table {
-    max-height: 500px; overflow-y: auto; background: #161b22;
-    border: 1px solid #30363d; border-radius: 8px;
+    max-height: 500px; overflow-y: auto; background: var(--bg-card);
+    border: 1px solid var(--border-primary); border-radius: 10px;
   }
   .scroll-table table { border: none; }
 
   /* --- Forms --- */
   .inline-form { display: flex; gap: 8px; margin-bottom: 12px; }
   input[type="text"], input[type="password"] {
-    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
-    padding: 6px 12px; color: #c9d1d9; font-size: 13px; flex: 1;
-    font-family: "SF Mono", Menlo, Consolas, monospace;
+    background: var(--bg-input); border: 1px solid var(--border-primary); border-radius: 6px;
+    padding: 6px 12px; color: var(--text-primary); font-size: 13px; flex: 1;
+    font-family: "SF Mono", Menlo, Consolas, monospace; transition: border-color 0.15s;
   }
   input[type="text"]:focus, input[type="password"]:focus {
-    outline: none; border-color: #58a6ff;
+    outline: none; border-color: var(--accent);
   }
   .search-input {
-    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
-    padding: 6px 12px; color: #c9d1d9; font-size: 13px; width: 250px;
+    background: var(--bg-input); border: 1px solid var(--border-primary); border-radius: 6px;
+    padding: 6px 12px; color: var(--text-primary); font-size: 13px; width: 250px;
+    transition: border-color 0.15s;
   }
-  .search-input:focus { outline: none; border-color: #58a6ff; }
+  .search-input:focus { outline: none; border-color: var(--accent); }
   select {
-    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
-    padding: 6px 12px; color: #c9d1d9; font-size: 13px;
+    background: var(--bg-input); border: 1px solid var(--border-primary); border-radius: 6px;
+    padding: 6px 12px; color: var(--text-primary); font-size: 13px; transition: border-color 0.15s;
   }
-  select:focus { outline: none; border-color: #58a6ff; }
+  select:focus { outline: none; border-color: var(--accent); }
 
   /* --- Buttons --- */
   .btn {
-    padding: 6px 14px; border-radius: 6px; border: 1px solid #30363d;
-    background: #21262d; color: #c9d1d9; font-size: 13px; cursor: pointer;
-    transition: background 0.15s;
+    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border-primary);
+    background: var(--bg-btn); color: var(--text-primary); font-size: 13px; cursor: pointer;
+    transition: all 0.15s ease;
   }
-  .btn:hover { background: #30363d; }
-  .btn-primary { background: #238636; border-color: #2ea043; color: #fff; }
-  .btn-primary:hover { background: #2ea043; }
-  .btn-danger { background: #da3633; border-color: #f85149; color: #fff; }
-  .btn-danger:hover { background: #f85149; }
+  .btn:hover { background: var(--bg-btn-hover); }
+  .btn-primary { background: var(--green-btn); border-color: var(--green-btn-hover); color: #fff; }
+  .btn-primary:hover { background: var(--green-btn-hover); }
+  .btn-danger { background: var(--red-btn); border-color: var(--red); color: #fff; }
+  .btn-danger:hover { background: var(--red); }
   .btn-sm { padding: 3px 8px; font-size: 12px; }
 
   /* --- Toggle switch --- */
   .toggle { position: relative; display: inline-block; width: 36px; height: 20px; }
   .toggle input { opacity: 0; width: 0; height: 0; }
   .toggle .slider {
-    position: absolute; cursor: pointer; inset: 0; background: #30363d;
+    position: absolute; cursor: pointer; inset: 0; background: var(--border-primary);
     border-radius: 20px; transition: background 0.2s;
   }
   .toggle .slider::before {
     content: ""; position: absolute; height: 14px; width: 14px; left: 3px; bottom: 3px;
-    background: #8b949e; border-radius: 50%; transition: transform 0.2s, background 0.2s;
+    background: var(--text-secondary); border-radius: 50%; transition: transform 0.2s, background 0.2s;
   }
-  .toggle input:checked + .slider { background: #238636; }
+  .toggle input:checked + .slider { background: var(--green-btn); }
   .toggle input:checked + .slider::before { transform: translateX(16px); background: #fff; }
 
   /* --- Domain list --- */
   .domain-list {
-    max-height: 300px; overflow-y: auto; background: #161b22;
-    border: 1px solid #30363d; border-radius: 8px;
+    max-height: 300px; overflow-y: auto; background: var(--bg-card);
+    border: 1px solid var(--border-primary); border-radius: 10px;
   }
   .domain-item {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 6px 12px; border-bottom: 1px solid #21262d; font-size: 13px;
+    padding: 6px 12px; border-bottom: 1px solid var(--border-subtle); font-size: 13px;
   }
   .domain-item:last-child { border-bottom: none; }
   .domain-item .name { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
-  .domain-item .meta { color: #8b949e; font-size: 11px; }
+  .domain-item .meta { color: var(--text-secondary); font-size: 11px; }
   .count-badge {
-    display: inline-block; background: #30363d; color: #8b949e; padding: 1px 8px;
+    display: inline-block; background: var(--border-primary); color: var(--text-secondary); padding: 1px 8px;
     border-radius: 10px; font-size: 11px; margin-left: 6px; font-weight: 600;
   }
-  .empty-state { padding: 24px; text-align: center; color: #484f58; font-size: 13px; }
+  .empty-state { padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px; }
   .regex-tag { display: inline-block; background: #1f6feb; color: #fff; padding: 1px 5px; border-radius: 3px; font-size: 10px; margin-right: 6px; font-weight: 600; }
-  .regex-toggle { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #8b949e; cursor: pointer; white-space: nowrap; }
+  .regex-toggle { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); cursor: pointer; white-space: nowrap; }
   .regex-toggle input { margin: 0; }
-  .help-text { color: #8b949e; font-size: 12px; margin: 4px 0 12px; }
+  .help-text { color: var(--text-secondary); font-size: 12px; margin: 4px 0 12px; }
   .form-grid { display: flex; flex-direction: column; gap: 10px; }
   .form-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .form-row label { color: #8b949e; font-size: 12px; min-width: 100px; }
+  .form-row label { color: var(--text-secondary); font-size: 12px; min-width: 100px; }
   .form-row input { flex: 1; }
   .day-picks { display: flex; gap: 6px; flex-wrap: wrap; }
-  .day-pick { display: flex; align-items: center; gap: 3px; font-size: 12px; color: #c9d1d9; cursor: pointer; }
+  .day-pick { display: flex; align-items: center; gap: 3px; font-size: 12px; color: var(--text-primary); cursor: pointer; }
   .day-pick input { margin: 0; }
   .sched-card {
-    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-    padding: 14px; margin-bottom: 10px;
+    background: var(--bg-card); border: 1px solid var(--border-primary); border-radius: 10px;
+    padding: 14px; margin-bottom: 10px; box-shadow: var(--shadow-card);
+    transition: all 0.15s ease;
   }
+  .sched-card:hover { box-shadow: var(--shadow-card-hover); transform: translateY(-1px); }
   .sched-card .sched-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   .sched-card .sched-name { font-weight: 600; font-size: 14px; }
-  .sched-card .sched-time { color: #8b949e; font-size: 12px; font-family: "SF Mono", Menlo, Consolas, monospace; }
-  .sched-card .sched-days { color: #8b949e; font-size: 11px; margin-bottom: 4px; }
-  .sched-card .sched-rules { font-size: 12px; color: #c9d1d9; font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .sched-card .sched-time { color: var(--text-secondary); font-size: 12px; font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .sched-card .sched-days { color: var(--text-secondary); font-size: 11px; margin-bottom: 4px; }
+  .sched-card .sched-rules { font-size: 12px; color: var(--text-primary); font-family: "SF Mono", Menlo, Consolas, monospace; }
   .sched-card .active-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-  .sched-card .active-dot.on { background: #3fb950; }
-  .sched-card .active-dot.off { background: #484f58; }
+  .sched-card .active-dot.on { background: var(--green); }
+  .sched-card .active-dot.off { background: var(--text-muted); }
 
   /* --- Config card --- */
   .config-card {
-    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-    padding: 16px; margin-bottom: 16px;
+    background: var(--bg-card); border: 1px solid var(--border-primary); border-radius: 10px;
+    padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow-card);
   }
   .config-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
-  .config-row .key { color: #8b949e; }
-  .config-row .val { color: #c9d1d9; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+  .config-row .key { color: var(--text-secondary); }
+  .config-row .val { color: var(--text-primary); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
 
   /* --- Login overlay --- */
   .login-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.8);
+    position: fixed; inset: 0; background: var(--bg-overlay);
     display: flex; align-items: center; justify-content: center; z-index: 1000;
   }
   .login-overlay.hidden { display: none; }
   .login-card {
-    background: #161b22; border: 1px solid #30363d; border-radius: 12px;
-    padding: 32px; width: 380px; text-align: center;
+    background: var(--bg-card); border: 1px solid var(--border-primary); border-radius: 12px;
+    padding: 32px; width: 380px; text-align: center; box-shadow: var(--shadow-card-hover);
   }
-  .login-card h2 { color: #58a6ff; margin-bottom: 8px; font-size: 20px; }
-  .login-card p { color: #8b949e; font-size: 13px; margin-bottom: 20px; }
+  .login-card h2 { color: var(--accent); margin-bottom: 8px; font-size: 20px; }
+  .login-card p { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; }
   .login-card input {
     width: 100%; margin-bottom: 12px; padding: 10px 12px; font-size: 14px;
   }
   .login-card .btn { width: 100%; padding: 10px; font-size: 14px; }
-  .login-error { color: #f85149; font-size: 12px; margin-bottom: 8px; display: none; }
+  .login-error { color: var(--red); font-size: 12px; margin-bottom: 8px; display: none; }
 
   /* --- Toast --- */
   .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 2000; }
@@ -1261,49 +1302,49 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     padding: 10px 16px; border-radius: 8px; color: #fff; font-size: 13px;
     margin-top: 8px; animation: fadeIn 0.2s; min-width: 200px;
   }
-  .toast.success { background: #238636; }
-  .toast.error { background: #da3633; }
+  .toast.success { background: var(--green-btn); }
+  .toast.error { background: var(--red-btn); }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
   .actions { display: flex; gap: 8px; margin-top: 16px; }
-  .refresh-note { color: #484f58; font-size: 11px; text-align: right; margin-bottom: 8px; }
+  .refresh-note { color: var(--text-muted); font-size: 11px; text-align: right; margin-bottom: 8px; }
   .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
 
   /* --- Filter chip --- */
   .filter-chip {
     display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px;
-    background: #1f2937; border: 1px solid #58a6ff; border-radius: 12px;
-    font-size: 11px; color: #58a6ff;
+    background: var(--bg-btn); border: 1px solid var(--accent); border-radius: 12px;
+    font-size: 11px; color: var(--accent);
   }
   .filter-chip .dismiss { cursor: pointer; font-weight: bold; margin-left: 4px; }
-  .filter-chip .dismiss:hover { color: #f85149; }
+  .filter-chip .dismiss:hover { color: var(--red); }
 
   /* --- History chart --- */
   .history-chart {
-    position: relative; background: #161b22; border: 1px solid #30363d;
-    border-radius: 8px; padding: 16px; margin-bottom: 24px;
+    position: relative; background: var(--bg-card); border: 1px solid var(--border-primary);
+    border-radius: 10px; padding: 20px; margin-bottom: 24px; box-shadow: var(--shadow-card);
   }
   .history-chart h2 {
-    font-size: 14px; color: #8b949e; margin-bottom: 12px;
+    font-size: 14px; color: var(--text-secondary); margin-bottom: 12px;
     text-transform: uppercase; letter-spacing: 0.5px;
   }
   .history-chart canvas { width: 100%; height: 200px; display: block; cursor: crosshair; }
   .chart-tooltip {
-    position: fixed; display: none; background: #1c2128; border: 1px solid #30363d;
-    border-radius: 6px; padding: 8px 12px; font-size: 12px; color: #c9d1d9;
-    pointer-events: none; z-index: 10; white-space: nowrap;
+    position: fixed; display: none; background: var(--bg-tooltip); border: 1px solid var(--border-primary);
+    border-radius: 6px; padding: 8px 12px; font-size: 12px; color: var(--text-primary);
+    pointer-events: none; z-index: 10; white-space: nowrap; box-shadow: var(--shadow-card-hover);
   }
-  .chart-tooltip .tt-time { color: #8b949e; margin-bottom: 4px; }
-  .chart-tooltip .tt-allowed { color: #3fb950; }
-  .chart-tooltip .tt-blocked { color: #f85149; }
+  .chart-tooltip .tt-time { color: var(--text-secondary); margin-bottom: 4px; }
+  .chart-tooltip .tt-allowed { color: var(--green); }
+  .chart-tooltip .tt-blocked { color: var(--red); }
 
   /* --- Donut chart --- */
   .donut-chart {
-    background: #161b22; border: 1px solid #30363d;
-    border-radius: 8px; padding: 16px; margin-bottom: 24px;
+    background: var(--bg-card); border: 1px solid var(--border-primary);
+    border-radius: 10px; padding: 20px; margin-bottom: 24px; box-shadow: var(--shadow-card);
   }
   .donut-chart h2 {
-    font-size: 14px; color: #8b949e; margin-bottom: 12px;
+    font-size: 14px; color: var(--text-secondary); margin-bottom: 12px;
     text-transform: uppercase; letter-spacing: 0.5px;
   }
   .donut-container { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
@@ -1321,11 +1362,56 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   /* --- SSE Live badge --- */
   .live-badge {
-    display: inline-block; background: #f85149; color: #fff; font-size: 9px;
+    display: inline-block; background: var(--red); color: #fff; font-size: 9px;
     padding: 1px 5px; border-radius: 4px; font-weight: 700; vertical-align: top;
     margin-left: 4px; animation: pulse 2s infinite;
   }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  /* --- Help tab --- */
+  .help-container { max-width: 720px; }
+  .help-section { border: 1px solid var(--border-primary); border-radius: 10px; margin-bottom: 8px; overflow: hidden; }
+  .help-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 18px; cursor: pointer; background: var(--bg-card);
+    font-size: 15px; font-weight: 600; color: var(--text-primary);
+    transition: background 0.15s;
+  }
+  .help-header:hover { background: var(--bg-card-hover); }
+  .help-chevron {
+    transition: transform 0.2s ease; color: var(--text-muted); font-size: 12px;
+  }
+  .help-section.open .help-chevron { transform: rotate(90deg); }
+  .help-body {
+    max-height: 0; overflow: hidden; transition: max-height 0.3s ease;
+    background: var(--bg-card);
+  }
+  .help-section.open .help-body { max-height: 2000px; }
+  .help-body-inner {
+    padding: 0 18px 16px; color: var(--text-secondary); font-size: 14px; line-height: 1.7;
+  }
+  .help-body-inner p { margin-bottom: 10px; }
+  .help-body-inner ul { margin: 8px 0 12px 20px; }
+  .help-body-inner li { margin-bottom: 4px; }
+  .help-body-inner code {
+    background: var(--bg-page); padding: 2px 6px; border-radius: 4px;
+    font-size: 12px; color: var(--accent);
+  }
+  .help-body-inner strong { color: var(--text-primary); }
+
+  /* --- Scrollbars --- */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg-page); }
+  ::-webkit-scrollbar-thumb { background: var(--border-primary); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+  /* --- Theme transitions --- */
+  .tabs, .card, .sched-card, .config-card, .history-chart, .donut-chart,
+  .domain-list, .scroll-table, .login-card, table, .help-section, .help-header,
+  .chart-tooltip, .theme-toggle, select, input[type="text"], input[type="password"],
+  .search-input, .btn, .filter-chip {
+    transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
+  }
 </style>
 </head>
 <body>
@@ -1346,6 +1432,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <div class="header">
   <div><h1>Coreguard</h1><span class="subtitle">DNS Ad &amp; Tracker Blocking</span></div>
+  <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme" id="theme-toggle-btn">
+    <svg id="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+    <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+  </button>
 </div>
 
 <div class="tabs">
@@ -1356,6 +1446,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="tab" data-tab="schedules">Schedules</div>
   <div class="tab" data-tab="parental">Parental</div>
   <div class="tab" data-tab="settings">Settings</div>
+  <div class="tab" data-tab="help">Help</div>
 </div>
 
 <!-- Tab 1: Overview -->
@@ -1398,7 +1489,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <h2>Top Clients</h2>
     <table><thead><tr><th>Client IP</th><th>Queries</th></tr></thead><tbody id="top-clients"></tbody></table>
   </div>
-  <div class="refresh-note">Auto-refreshes every 5 seconds</div>
+  <div class="refresh-note">Stats update every 1s, charts every 5s</div>
 </div>
 
 <!-- Tab 2: Queries -->
@@ -1422,7 +1513,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <span id="page-info">Page 1</span>
     <button class="btn btn-sm" id="next-page" onclick="nextPage()">Next</button>
   </div>
-  <div class="refresh-note">Auto-refreshes every 5 seconds</div>
+  <div class="refresh-note">Refreshes every 5 seconds</div>
 </div>
 
 <!-- Tab 3: Domains -->
@@ -1534,7 +1625,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <div class="config-row" style="margin:12px 0">
       <span class="key">YouTube Restriction</span>
-      <select id="yt-restrict" onchange="setYoutubeRestrict(this.value)" style="background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 8px">
+      <select id="yt-restrict" onchange="setYoutubeRestrict(this.value)">
         <option value="moderate">Moderate</option>
         <option value="strict">Strict</option>
       </select>
@@ -1569,7 +1660,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="section">
     <h2>Dashboard Token</h2>
     <div class="inline-form">
-      <input type="text" id="token-display" readonly style="color:#8b949e">
+      <input type="text" id="token-display" readonly style="color:var(--text-secondary)">
       <button class="btn btn-sm" onclick="copyToken()">Copy</button>
     </div>
   </div>
@@ -1579,6 +1670,146 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="btn" onclick="clearCache()">Clear DNS Cache</button>
       <button class="btn btn-danger" onclick="stopDaemon()">Stop Daemon</button>
       <button class="btn" onclick="doLogout()">Logout</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tab 8: Help -->
+<div class="tab-content" id="tab-help">
+  <div class="help-container">
+    <div class="help-section">
+      <div class="help-header" onclick="toggleHelp(this)">
+        <span>What is Coreguard?</span>
+        <span class="help-chevron">&#9654;</span>
+      </div>
+      <div class="help-body"><div class="help-body-inner">
+        <p>Coreguard is a <strong>DNS-level ad and tracker blocker</strong> that runs on your local network. Instead of relying on browser extensions, it intercepts DNS requests from all devices on your network and blocks connections to known advertising, tracking, and malicious domains.</p>
+        <p>This means every device on your network &mdash; phones, tablets, smart TVs, and computers &mdash; gets protection without needing to install anything on each device individually.</p>
+      </div></div>
+    </div>
+    <div class="help-section">
+      <div class="help-header" onclick="toggleHelp(this)">
+        <span>How does blocking work?</span>
+        <span class="help-chevron">&#9654;</span>
+      </div>
+      <div class="help-body"><div class="help-body-inner">
+        <p>When a device on your network tries to visit a website, it first asks a DNS server to translate the domain name (like <code>ads.example.com</code>) into an IP address.</p>
+        <p>Coreguard acts as your network's DNS server. When it receives a request:</p>
+        <ul>
+          <li>If the domain is on a <strong>blocklist</strong>, Coreguard returns <code>0.0.0.0</code>, which effectively prevents the connection.</li>
+          <li>If the domain is <strong>allowed</strong>, Coreguard forwards the request to your configured upstream DNS provider (like Cloudflare or Google) and returns the real IP address.</li>
+        </ul>
+        <p>Coreguard also follows <strong>CNAME chains</strong> &mdash; if an allowed domain redirects to a blocked domain via a CNAME record, that connection is still blocked.</p>
+      </div></div>
+    </div>
+    <div class="help-section">
+      <div class="help-header" onclick="toggleHelp(this)">
+        <span>How to allow or block domains</span>
+        <span class="help-chevron">&#9654;</span>
+      </div>
+      <div class="help-body"><div class="help-body-inner">
+        <p>Go to the <strong>Domains</strong> tab to manage your custom lists:</p>
+        <ul>
+          <li><strong>Allowlist:</strong> Domains you always want to allow, even if they appear on a blocklist. Type the domain (e.g., <code>example.com</code>) and click Add.</li>
+          <li><strong>Blocklist:</strong> Domains you always want to block, in addition to your filter lists. Type the domain and click Add.</li>
+          <li><strong>Regex patterns:</strong> Check the &ldquo;Regex&rdquo; checkbox before adding to use a regular expression pattern (e.g., <code>.*ads.*\\.com</code>).</li>
+          <li><strong>Temporary Allows:</strong> Allow a blocked domain for a set duration (e.g., <code>5m</code> for 5 minutes, <code>1h</code> for 1 hour). Useful when a website isn't working due to blocking.</li>
+        </ul>
+        <p>You can also click any domain in the <strong>Queries</strong> tab to investigate it, then decide whether to allow or block it.</p>
+      </div></div>
+    </div>
+    <div class="help-section">
+      <div class="help-header" onclick="toggleHelp(this)">
+        <span>Understanding the statistics</span>
+        <span class="help-chevron">&#9654;</span>
+      </div>
+      <div class="help-body"><div class="help-body-inner">
+        <p>The <strong>Overview</strong> tab shows key metrics about your DNS activity:</p>
+        <ul>
+          <li><strong>Total Queries:</strong> The total number of DNS lookups made by all devices since the daemon started.</li>
+          <li><strong>Blocked:</strong> How many of those queries matched a blocklist and were prevented.</li>
+          <li><strong>Block Rate:</strong> The percentage of total queries that were blocked. A typical home network sees 10&ndash;30%.</li>
+          <li><strong>Cache Hit Rate:</strong> How often a DNS result was served from cache instead of querying upstream. Higher is better for speed.</li>
+          <li><strong>Cache Size:</strong> The number of DNS records currently stored in cache.</li>
+          <li><strong>CNAME Blocks:</strong> Queries blocked because their CNAME chain pointed to a blocked domain.</li>
+        </ul>
+        <p>The bar chart shows query volume over the last 24 hours. Click any bar to filter the Queries tab to that time window.</p>
+      </div></div>
+    </div>
+    <div class="help-section">
+      <div class="help-header" onclick="toggleHelp(this)">
+        <span>Using schedules</span>
+        <span class="help-chevron">&#9654;</span>
+      </div>
+      <div class="help-body"><div class="help-body-inner">
+        <p>Schedules let you <strong>block specific domains during set times</strong>. For example, you can block social media during work hours.</p>
+        <ul>
+          <li>Go to the <strong>Schedules</strong> tab and fill in a name, start/end times (24-hour format, e.g., <code>09:00</code> to <code>17:00</code>), and select which days.</li>
+          <li>Add domains to block (comma-separated, e.g., <code>reddit.com, twitter.com</code>).</li>
+          <li>Add wildcard or regex patterns for broader blocking (e.g., <code>*.tiktok.com</code> or <code>regex:^game.*$</code>).</li>
+          <li>Use the toggle to enable or disable a schedule without deleting it.</li>
+        </ul>
+        <p>Active schedules show a <strong>green dot</strong>; inactive ones show a gray dot.</p>
+      </div></div>
+    </div>
+    <div class="help-section">
+      <div class="help-header" onclick="toggleHelp(this)">
+        <span>Configuring upstream DNS</span>
+        <span class="help-chevron">&#9654;</span>
+      </div>
+      <div class="help-body"><div class="help-body-inner">
+        <p>Coreguard forwards allowed queries to upstream DNS providers. The current configuration is shown in the <strong>Settings</strong> tab. Supported modes:</p>
+        <ul>
+          <li><strong>Plain DNS:</strong> Standard unencrypted DNS (port 53). Fastest but not private.</li>
+          <li><strong>DNS-over-HTTPS (DoH):</strong> Encrypts DNS queries over HTTPS. Good privacy, widely supported.</li>
+          <li><strong>DNS-over-TLS (DoT):</strong> Encrypts DNS queries over TLS (port 853). Efficient and private.</li>
+          <li><strong>DNS-over-QUIC (DoQ):</strong> Encrypts DNS over QUIC protocol. Lowest latency encrypted option.</li>
+        </ul>
+        <p>To change providers or mode, edit the Coreguard configuration file and restart the daemon.</p>
+      </div></div>
+    </div>
+    <div class="help-section">
+      <div class="help-header" onclick="toggleHelp(this)">
+        <span>Parental controls</span>
+        <span class="help-chevron">&#9654;</span>
+      </div>
+      <div class="help-body"><div class="help-body-inner">
+        <p>The <strong>Parental</strong> tab provides family-friendly filtering options:</p>
+        <ul>
+          <li><strong>Safe Search:</strong> Forces search engines (Google, Bing, DuckDuckGo) to use their safe search modes by redirecting DNS queries to their restricted variants.</li>
+          <li><strong>YouTube Restriction:</strong> Set to Moderate or Strict to filter YouTube content via DNS-level enforcement.</li>
+          <li><strong>Content Categories:</strong> Block entire categories of websites (adult content, gambling, social media) using curated filter lists.</li>
+        </ul>
+      </div></div>
+    </div>
+    <div class="help-section">
+      <div class="help-header" onclick="toggleHelp(this)">
+        <span>Troubleshooting</span>
+        <span class="help-chevron">&#9654;</span>
+      </div>
+      <div class="help-body"><div class="help-body-inner">
+        <p><strong>A website isn't loading:</strong></p>
+        <ul>
+          <li>Check the <strong>Queries</strong> tab to see if the domain was blocked.</li>
+          <li>If blocked, use <strong>Temporary Allow</strong> in the Domains tab to unblock it briefly and test.</li>
+          <li>If the site works after allowing, add it to your permanent allowlist.</li>
+        </ul>
+        <p><strong>Ads are still showing:</strong></p>
+        <ul>
+          <li>Some ads are served from the same domain as the content (first-party ads), which DNS-level blocking cannot stop.</li>
+          <li>Try adding the specific ad domain to your custom blocklist.</li>
+          <li>Go to the <strong>Lists</strong> tab and add additional filter lists for broader coverage.</li>
+        </ul>
+        <p><strong>Dashboard not updating:</strong></p>
+        <ul>
+          <li>Check that the Coreguard daemon is still running.</li>
+          <li>Look for the <strong>LIVE</strong> badge on the Queries tab &mdash; if it's missing, the real-time connection may have dropped and will reconnect automatically.</li>
+        </ul>
+        <p><strong>How to stop Coreguard:</strong></p>
+        <ul>
+          <li>Go to <strong>Settings</strong> and click <strong>Stop Daemon</strong>, or run <code>coreguard stop</code> in your terminal.</li>
+        </ul>
+      </div></div>
     </div>
   </div>
 </div>
@@ -1595,7 +1826,72 @@ let timeFilterStart = null;
 let timeFilterEnd = null;
 let prevStats = {};
 let sseConnected = false;
-let pollInterval = 5000;
+let activeTab = 'overview';
+let statsInFlight = false;
+
+// --- Theme ---
+function getTheme() {
+  return localStorage.getItem('cg_theme') || 'dark';
+}
+
+function applyTheme() {
+  var theme = getTheme();
+  if (theme === 'light' || (theme === 'auto' && window.matchMedia('(prefers-color-scheme: light)').matches)) {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  // Update toggle icon
+  var isLight = document.documentElement.hasAttribute('data-theme');
+  var sun = document.getElementById('theme-icon-sun');
+  var moon = document.getElementById('theme-icon-moon');
+  if (sun && moon) {
+    sun.style.display = isLight ? '' : 'none';
+    moon.style.display = isLight ? 'none' : '';
+  }
+  // Redraw visible canvases
+  drawHistoryChart();
+  drawDonutChart(prevStats.query_types);
+  if (prevStats.sparkline) {
+    drawSparkline(document.getElementById('spark-total'), prevStats.sparkline.total, getThemeColor('text-bright'));
+    drawSparkline(document.getElementById('spark-blocked'), prevStats.sparkline.blocked, getThemeColor('red'));
+  }
+  updateFavicon(prevStats.blocked_percent || 0);
+}
+
+function toggleTheme() {
+  var current = getTheme();
+  var next = (current === 'dark' || current === 'auto') ? 'light' : 'dark';
+  localStorage.setItem('cg_theme', next);
+  applyTheme();
+}
+
+var _themeColorFallbacks = {
+  'bg-page': '#0d1117', 'bg-card': '#161b22', 'bg-card-hover': '#1c2128',
+  'bg-input': '#0d1117', 'bg-btn': '#21262d', 'bg-btn-hover': '#30363d',
+  'bg-tooltip': '#1c2128', 'border-primary': '#30363d', 'border-subtle': '#21262d',
+  'text-primary': '#c9d1d9', 'text-secondary': '#8b949e', 'text-muted': '#484f58',
+  'text-bright': '#f0f6fc', 'accent': '#58a6ff',
+  'green': '#3fb950', 'green-btn': '#238636', 'green-btn-hover': '#2ea043',
+  'red': '#f85149', 'red-btn': '#da3633',
+  'orange': '#f0883e', 'orange-light': '#ffa657', 'purple': '#d2a8ff'
+};
+
+function getThemeColor(name) {
+  var val = getComputedStyle(document.documentElement).getPropertyValue('--' + name).trim();
+  return val || _themeColorFallbacks[name] || '#888';
+}
+
+// Listen for OS theme changes
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function() {
+  if (getTheme() === 'auto') applyTheme();
+});
+
+// --- Help accordion ---
+function toggleHelp(header) {
+  var section = header.parentElement;
+  section.classList.toggle('open');
+}
 
 // --- Helpers ---
 function esc(s) {
@@ -1655,7 +1951,7 @@ function updateFavicon(blockedPercent) {
   const ctx = canvas.getContext('2d');
   ctx.beginPath();
   ctx.arc(16, 16, 14, 0, Math.PI * 2);
-  ctx.fillStyle = blockedPercent < 50 ? '#3fb950' : '#f85149';
+  ctx.fillStyle = blockedPercent < 50 ? getThemeColor('green') : getThemeColor('red');
   ctx.fill();
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 14px sans-serif';
@@ -1711,17 +2007,17 @@ function drawDonutChart(queryTypes) {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, 150, 150);
 
-  const colors = { A: '#3fb950', AAAA: '#58a6ff', CNAME: '#d2a8ff', MX: '#f0883e', TXT: '#ffa657' };
-  const defaultColor = '#8b949e';
+  const colors = { A: getThemeColor('green'), AAAA: getThemeColor('accent'), CNAME: getThemeColor('purple'), MX: getThemeColor('orange'), TXT: getThemeColor('orange-light') };
+  const defaultColor = getThemeColor('text-secondary');
   const entries = Object.entries(queryTypes || {});
   const total = entries.reduce((s, [, v]) => s + v, 0);
   if (total === 0) {
     ctx.beginPath();
     ctx.arc(75, 75, 55, 0, Math.PI * 2);
-    ctx.strokeStyle = '#30363d';
+    ctx.strokeStyle = getThemeColor('border-primary');
     ctx.lineWidth = 20;
     ctx.stroke();
-    legend.innerHTML = '<div style="color:#484f58;font-size:12px">No data</div>';
+    legend.innerHTML = '<div style="color:var(--text-muted);font-size:12px">No data</div>';
     return;
   }
 
@@ -1780,6 +2076,7 @@ function switchTab(tabName) {
   const tab = document.querySelector('.tab[data-tab="'+tabName+'"]');
   if (tab) tab.classList.add('active');
   document.getElementById('tab-' + tabName).classList.add('active');
+  activeTab = tabName;
 }
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => switchTab(tab.dataset.tab));
@@ -1820,8 +2117,10 @@ function updateTimeFilterChip() {
   }
 }
 
-// --- Overview ---
-async function refreshOverview() {
+// --- Overview (split into fast stats + slow full refresh) ---
+async function refreshStats() {
+  if (statsInFlight) return;
+  statsInFlight = true;
   try {
     const stats = await fetch('/api/stats').then(r => r.json());
 
@@ -1849,9 +2148,16 @@ async function refreshOverview() {
 
     // Sparklines
     if (stats.sparkline) {
-      drawSparkline(document.getElementById('spark-total'), stats.sparkline.total, '#f0f6fc');
-      drawSparkline(document.getElementById('spark-blocked'), stats.sparkline.blocked, '#f85149');
+      drawSparkline(document.getElementById('spark-total'), stats.sparkline.total, getThemeColor('text-bright'));
+      drawSparkline(document.getElementById('spark-blocked'), stats.sparkline.blocked, getThemeColor('red'));
     }
+  } catch(e) { console.error('Stats refresh failed:', e); }
+  finally { statsInFlight = false; }
+}
+
+async function refreshOverview() {
+  try {
+    const stats = prevStats;
 
     // Donut chart
     drawDonutChart(stats.query_types);
@@ -1867,7 +2173,7 @@ async function refreshOverview() {
     document.getElementById('top-clients').innerHTML = Object.entries(clients)
       .map(([ip,c]) => '<tr><td class="domain clickable" onclick="filterByClient(&#39;'+esc(ip)+'&#39;)">'+esc(ip)+'</td><td>'+fmt(c)+'</td></tr>').join('') || '<tr><td colspan="2" class="empty-state">No client data</td></tr>';
 
-  } catch(e) { console.error('Refresh failed:', e); }
+  } catch(e) { console.error('Overview refresh failed:', e); }
 }
 
 function filterByClient(ip) {
@@ -2073,7 +2379,7 @@ async function refreshSchedules() {
       const rules = [...(s.block_domains||[]), ...(s.block_patterns||[])];
       return '<div class="sched-card">'
         + '<div class="sched-header">'
-        +   '<div><span class="active-dot '+dotClass+'"></span><span class="sched-name">'+esc(s.name)+'</span> <span style="color:#8b949e;font-size:11px">('+statusText+')</span></div>'
+        +   '<div><span class="active-dot '+dotClass+'"></span><span class="sched-name">'+esc(s.name)+'</span> <span style="color:var(--text-secondary);font-size:11px">('+statusText+')</span></div>'
         +   '<div style="display:flex;gap:6px;align-items:center">'
         +     '<label class="toggle"><input type="checkbox" '+(s.enabled?'checked':'')+' onchange="toggleSchedule(&#39;'+esc(s.name)+'&#39;,this.checked)"><span class="slider"></span></label>'
         +     '<button class="btn btn-sm" onclick="removeSchedule(&#39;'+esc(s.name)+'&#39;)">Remove</button>'
@@ -2245,9 +2551,9 @@ function drawHistoryChart() {
   const step = Math.ceil(maxVal / gridCount);
   const yMax = step * gridCount;
 
-  ctx.strokeStyle = '#30363d';
+  ctx.strokeStyle = getThemeColor('border-primary');
   ctx.lineWidth = 0.5;
-  ctx.fillStyle = '#484f58';
+  ctx.fillStyle = getThemeColor('text-muted');
   ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
   ctx.textAlign = 'right';
   for (let i = 0; i <= gridCount; i++) {
@@ -2266,13 +2572,13 @@ function drawHistoryChart() {
     const x = pad.left + i * gap;
     const allowedH = (b.allowed / yMax) * ch;
     const blockedH = (b.blocked / yMax) * ch;
-    ctx.fillStyle = '#3fb950';
+    ctx.fillStyle = getThemeColor('green');
     ctx.fillRect(x, pad.top + ch - allowedH - blockedH, barW, allowedH);
-    ctx.fillStyle = '#f85149';
+    ctx.fillStyle = getThemeColor('red');
     ctx.fillRect(x, pad.top + ch - blockedH, barW, blockedH);
   }
 
-  ctx.fillStyle = '#484f58';
+  ctx.fillStyle = getThemeColor('text-muted');
   ctx.textAlign = 'center';
   ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
   for (let i = 0; i < historyData.length; i += 18) {
@@ -2351,7 +2657,6 @@ function connectSSE() {
     es.onopen = function() {
       sseConnected = true;
       document.getElementById('live-badge').style.display = '';
-      pollInterval = 30000;
     };
     es.onmessage = function(e) {
       try {
@@ -2366,7 +2671,6 @@ function connectSSE() {
     es.onerror = function() {
       sseConnected = false;
       document.getElementById('live-badge').style.display = 'none';
-      pollInterval = 5000;
       es.close();
       // Reconnect after 5s
       setTimeout(connectSSE, 5000);
@@ -2378,6 +2682,7 @@ function connectSSE() {
 
 // --- Init ---
 async function init() {
+  applyTheme();
   if (token) {
     try {
       await api('POST', '/api/auth/verify', {});
@@ -2385,6 +2690,7 @@ async function init() {
   } else {
     showLogin();
   }
+  refreshStats();
   refreshOverview();
   refreshHistory();
   setupChartInteraction();
@@ -2398,15 +2704,21 @@ async function init() {
 }
 
 init();
+
+// Fast: stat cards + query feed every 1 second
 setInterval(() => {
-  refreshOverview();
-  if (document.getElementById('tab-queries').classList.contains('active') && !sseConnected) fetchQueries();
-  if (document.getElementById('tab-domains').classList.contains('active')) refreshDomains();
-  if (document.getElementById('tab-lists').classList.contains('active')) refreshLists();
-  if (document.getElementById('tab-schedules').classList.contains('active')) refreshSchedules();
-  if (document.getElementById('tab-parental').classList.contains('active')) refreshParental();
-}, pollInterval);
-setInterval(refreshHistory, 60000);
+  if (activeTab === 'overview') refreshStats();
+  if (activeTab === 'queries' && !sseConnected) fetchQueries();
+}, 1000);
+
+// Slow: charts + tables every 5 seconds
+setInterval(() => {
+  if (activeTab === 'overview') { refreshHistory(); refreshOverview(); }
+  if (activeTab === 'domains') refreshDomains();
+  if (activeTab === 'lists') refreshLists();
+  if (activeTab === 'schedules') refreshSchedules();
+  if (activeTab === 'parental') refreshParental();
+}, 5000);
 </script>
 </body>
 </html>"""
