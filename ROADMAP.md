@@ -105,11 +105,17 @@
 
 ## Phase 5 — Advanced protocol & security
 
-**DNSSEC validation**
-- [ ] Validate signed DNS responses from upstream
+**DNSSEC validation** *(done)*
+- [x] Set DO (DNSSEC OK) bit on outgoing queries via EDNS0
+- [x] Check AD (Authenticated Data) flag on upstream responses
+- [x] Strict mode: reject AD=0 responses as SERVFAIL
+- [x] DNSSEC stats (validated/failed counters) and Prometheus metrics
+- [x] `coreguard dnssec --enable/--disable --strict/--no-strict` CLI command
 
-**DNS-over-QUIC (DoQ)**
-- [ ] Faster encrypted DNS transport (UDP-based, lower latency than DoH)
+**DNS-over-QUIC (DoQ)** *(done)*
+- [x] DNS-over-QUIC transport via `aioquic` (RFC 9250)
+- [x] `doq` field on upstream providers, `upstream_mode = "doq"` support
+- [x] Multi-provider failover with DoQ, plain DNS fallback
 
 ---
 

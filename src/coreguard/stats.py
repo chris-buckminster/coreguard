@@ -20,6 +20,8 @@ class Stats:
         self.cache_hits = 0
         self.cache_misses = 0
         self.cname_blocks = 0
+        self.dnssec_validated = 0
+        self.dnssec_failed = 0
         self.top_blocked: Counter[str] = Counter()
         self.top_queried: Counter[str] = Counter()
         self.query_types: Counter[str] = Counter()
@@ -60,6 +62,13 @@ class Stats:
     def record_cname_block(self) -> None:
         with self._lock:
             self.cname_blocks += 1
+
+    def record_dnssec(self, validated: bool) -> None:
+        with self._lock:
+            if validated:
+                self.dnssec_validated += 1
+            else:
+                self.dnssec_failed += 1
 
     def record_upstream_latency(self, seconds: float) -> None:
         """Record an upstream resolution latency sample."""
@@ -104,6 +113,8 @@ class Stats:
                 "cache_misses": self.cache_misses,
                 "cache_hit_rate": round((self.cache_hits / cache_total) * 100, 1),
                 "cname_blocks": self.cname_blocks,
+                "dnssec_validated": self.dnssec_validated,
+                "dnssec_failed": self.dnssec_failed,
                 "top_blocked": dict(self.top_blocked.most_common(10)),
                 "top_queried": dict(self.top_queried.most_common(10)),
                 "query_types": dict(self.query_types),

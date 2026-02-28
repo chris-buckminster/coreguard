@@ -151,3 +151,50 @@ class TestConfig:
         assert config.safe_search_enabled is False
         assert config.safe_search_youtube_restrict == "moderate"
         assert config.content_categories == []
+
+    def test_provider_doq_roundtrip(self):
+        """Config with doq field should serialize and deserialize correctly."""
+        config = Config()
+        config.upstream_providers = [
+            UpstreamProvider("test", "https://test/dns", "test.dns", "doq.test.dns", "1.2.3.4"),
+        ]
+        d = _config_to_dict(config)
+        assert d["upstream"]["providers"][0]["doq"] == "doq.test.dns"
+        restored = _dict_to_config(d)
+        assert restored.upstream_providers[0].doq == "doq.test.dns"
+
+    def test_provider_doq_backward_compat(self):
+        """Old config without doq field should get empty string default."""
+        data = {
+            "upstream": {
+                "providers": [
+                    {"name": "old", "doh": "https://old/dns", "dot": "old.dns", "plain": "1.2.3.4"}
+                ]
+            }
+        }
+        config = _dict_to_config(data)
+        assert config.upstream_providers[0].doq == ""
+
+    def test_dnssec_roundtrip(self):
+        """DNSSEC config should serialize and deserialize."""
+        config = Config()
+        config.dnssec_enabled = True
+        config.dnssec_strict = True
+        d = _config_to_dict(config)
+        assert d["dnssec"]["enabled"] is True
+        assert d["dnssec"]["strict"] is True
+        restored = _dict_to_config(d)
+        assert restored.dnssec_enabled is True
+        assert restored.dnssec_strict is True
+
+    def test_dnssec_defaults(self):
+        config = Config()
+        assert config.dnssec_enabled is False
+        assert config.dnssec_strict is False
+
+    def test_dnssec_absent_uses_defaults(self):
+        """Missing dnssec section should use defaults."""
+        data = {"upstream": {"mode": "doh"}}
+        config = _dict_to_config(data)
+        assert config.dnssec_enabled is False
+        assert config.dnssec_strict is False

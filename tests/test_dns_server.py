@@ -7,6 +7,7 @@ from coreguard.config import Config
 from coreguard.dns_server import BlockingResolver
 from coreguard.filtering import DomainFilter
 from coreguard.stats import Stats
+from coreguard.upstream import DNSSECError
 
 
 def _make_request(domain: str, qtype: str = "A") -> DNSRecord:
@@ -306,3 +307,51 @@ class TestSafeSearch:
         request = _make_request("www.bing.com")
         response = self.resolver.resolve(request, None)
         assert str(response.rr[0].rdata) == "strict.bing.com."
+
+
+def _make_upstream_response_with_ad(domain: str, ip: str = "1.2.3.4", ad: bool = False) -> bytes:
+    """Build a packed upstream response with configurable AD flag."""
+    req = DNSRecord.question(domain)
+    reply = req.reply()
+    reply.add_answer(RR(domain, QTYPE.A, rdata=A(ip), ttl=300))
+    reply.header.ad = ad
+    return reply.pack()
+
+
+class TestDNSSEC:
+    def setup_method(self):
+        self.domain_filter = DomainFilter()
+        self.config = Config()
+        self.config.dnssec_enabled = True
+        self.stats = Stats()
+        self.query_logger = MagicMock()
+        self.resolver = BlockingResolver(
+            self.domain_filter, self.config, self.stats, self.query_logger
+        )
+
+    @patch("coreguard.dns_server.resolve_upstream")
+    def test_dnssec_strict_servfail(self, mock_upstream):
+        """Upstream raises DNSSECError in strict mode -> SERVFAIL."""
+        mock_upstream.side_effect = DNSSECError("DNSSEC validation failed")
+        request = _make_request("example.com")
+        response = self.resolver.resolve(request, None)
+        assert response.header.rcode == 2  # SERVFAIL
+        assert self.stats.error_queries == 1
+
+    @patch("coreguard.dns_server.resolve_upstream")
+    def test_dnssec_stats_recorded(self, mock_upstream):
+        """DNSSEC stats should be recorded when enabled."""
+        mock_upstream.return_value = _make_upstream_response_with_ad("example.com", ad=True)
+        request = _make_request("example.com")
+        self.resolver.resolve(request, None)
+        assert self.stats.dnssec_validated == 1
+        assert self.stats.dnssec_failed == 0
+
+    @patch("coreguard.dns_server.resolve_upstream")
+    def test_dnssec_stats_failed(self, mock_upstream):
+        """DNSSEC failed stat should increment when AD=0."""
+        mock_upstream.return_value = _make_upstream_response_with_ad("example.com", ad=False)
+        request = _make_request("example.com")
+        self.resolver.resolve(request, None)
+        assert self.stats.dnssec_validated == 0
+        assert self.stats.dnssec_failed == 1

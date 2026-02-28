@@ -32,9 +32,10 @@ This approach blocks ads and trackers system-wide — across every browser and a
 ## Features
 
 - **System-wide blocking** — covers all browsers and applications, not just one
-- **Encrypted upstream DNS** — queries forwarded via DNS-over-HTTPS (DoH) by default, with DoT and plain DNS options
+- **Encrypted upstream DNS** — queries forwarded via DNS-over-HTTPS (DoH) by default, with DoT, DoQ (DNS-over-QUIC), and plain DNS options
 - **Multiple upstream providers** — automatic failover across Cloudflare, Google, and Quad9
 - **DNS response caching** — local TTL-aware cache makes repeat queries near-instant
+- **DNSSEC validation** — verifies upstream DNS responses via EDNS0 DO bit and AD flag checking, with optional strict mode that rejects unvalidated responses
 - **CNAME flattening** — detects and blocks trackers that hide behind CNAME cloaking
 - **Wildcard rules** — pattern matching in custom lists (`*.ads.com`, `ad*.example.com`)
 - **Regex rules** — full regular expression support for custom blocking and allow rules (`regex:^ads\..*\.com$`)
@@ -516,7 +517,7 @@ The `config.toml` file is created automatically on first run with sensible defau
 
 ```toml
 [upstream]
-mode = "doh"                          # "doh", "dot", or "plain"
+mode = "doh"                          # "doh", "dot", "doq", or "plain"
 timeout = 5.0                         # Upstream query timeout (seconds)
 
 # Providers are tried in order; if one fails, the next is used automatically.
@@ -524,19 +525,26 @@ timeout = 5.0                         # Upstream query timeout (seconds)
 name = "cloudflare"
 doh = "https://1.1.1.1/dns-query"
 dot = "1.1.1.1"
+doq = ""
 plain = "1.1.1.1"
 
 [[upstream.providers]]
 name = "google"
 doh = "https://8.8.8.8/dns-query"
 dot = "8.8.8.8"
+doq = ""
 plain = "8.8.8.8"
 
 [[upstream.providers]]
 name = "quad9"
 doh = "https://9.9.9.9:5053/dns-query"
 dot = "9.9.9.9"
+doq = ""
 plain = "9.9.9.9"
+
+[dnssec]
+enabled = false                       # Set DO bit, check AD flag
+strict = false                        # Reject AD=0 responses as SERVFAIL
 
 [server]
 listen_address = "127.0.0.1"
@@ -585,9 +593,22 @@ content_categories = []                     # ["adult", "gambling", "social"]
 |------|-------------|---------|---------------|
 | `doh` | DNS-over-HTTPS (default) | Encrypted, blends with HTTPS traffic | Best |
 | `dot` | DNS-over-TLS on port 853 | Encrypted | May be blocked by some networks |
+| `doq` | DNS-over-QUIC (RFC 9250) | Encrypted, lower latency than DoH | Requires QUIC-capable provider |
 | `plain` | Traditional unencrypted DNS | None | Universal |
 
-Coreguard ships with three upstream providers (Cloudflare, Google, Quad9) and tries them in order. If all providers fail with the primary mode (DoH/DoT), it falls back to plain DNS with each provider before giving up. You can add, remove, or reorder providers in `config.toml`.
+Coreguard ships with three upstream providers (Cloudflare, Google, Quad9) and tries them in order. If all providers fail with the primary mode (DoH/DoT/DoQ), it falls back to plain DNS with each provider before giving up. You can add, remove, or reorder providers in `config.toml`.
+
+### DNSSEC Validation
+
+Coreguard supports DNSSEC-aware validation that trusts the upstream resolver's cryptographic verification. When enabled, it sets the DO (DNSSEC OK) bit on outgoing queries and checks the AD (Authenticated Data) flag on responses. In strict mode, responses without AD=1 are rejected as SERVFAIL.
+
+```bash
+# Enable DNSSEC validation
+sudo coreguard dnssec --enable
+
+# Enable strict mode (reject unvalidated responses)
+sudo coreguard dnssec --enable --strict
+```
 
 ## How Blocking Works
 

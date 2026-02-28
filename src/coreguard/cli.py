@@ -1175,3 +1175,43 @@ def _toggle_schedule(ctx, name: str, enabled: bool) -> None:
         {"status": "ok", "name": name, "action": action, "reload_signal_sent": reload_sent},
         [f"Schedule '{name}' {action}.",
          "Reload signal sent." if reload_sent else "Daemon not running. Changes will apply on next start."])
+
+
+# --- DNSSEC management ---
+
+@main.command()
+@click.option("--enable/--disable", default=None, help="Enable or disable DNSSEC validation")
+@click.option("--strict/--no-strict", default=None, help="Enable or disable strict mode (reject AD=0)")
+@click.pass_context
+def dnssec(ctx, enable, disable=None, strict=None):
+    """Configure DNSSEC validation."""
+    _require_root(ctx, "dnssec")
+    config = load_config()
+
+    if enable is None and strict is None:
+        # Show current status
+        _emit(ctx,
+            {"status": "ok", "dnssec_enabled": config.dnssec_enabled, "dnssec_strict": config.dnssec_strict},
+            [f"DNSSEC validation: {'enabled' if config.dnssec_enabled else 'disabled'}",
+             f"Strict mode: {'enabled' if config.dnssec_strict else 'disabled'}"])
+        return
+
+    if enable is not None:
+        config.dnssec_enabled = enable
+    if strict is not None:
+        config.dnssec_strict = strict
+
+    save_config(config)
+    reload_sent = _send_reload_signal()
+
+    lines = []
+    if enable is not None:
+        lines.append(f"DNSSEC validation {'enabled' if enable else 'disabled'}.")
+    if strict is not None:
+        lines.append(f"Strict mode {'enabled' if strict else 'disabled'}.")
+    lines.append("Reload signal sent." if reload_sent else "Daemon not running. Changes will apply on next start.")
+
+    _emit(ctx,
+        {"status": "ok", "dnssec_enabled": config.dnssec_enabled,
+         "dnssec_strict": config.dnssec_strict, "reload_signal_sent": reload_sent},
+        lines)

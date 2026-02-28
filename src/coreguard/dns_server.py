@@ -86,6 +86,9 @@ class BlockingResolver(BaseResolver):
             self.stats.record_upstream_latency(time.monotonic() - t0)
             response = DNSRecord.parse(raw_response)
             response.header.id = request.header.id
+            # Record DNSSEC stats if enabled
+            if self.config.dnssec_enabled:
+                self.stats.record_dnssec(validated=response.header.ad == 1)
         except Exception as e:
             logger.error("Upstream resolution failed for %s: %s", qname, e)
             reply = request.reply()

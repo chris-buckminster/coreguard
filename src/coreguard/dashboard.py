@@ -192,6 +192,10 @@ def _format_prometheus_metrics(stats: Stats, cache=None, domain_filter=None) -> 
                  "Total cache misses.", stats.cache_misses)
         _counter("coreguard_cname_blocks_total",
                  "Total CNAME-chain blocks.", stats.cname_blocks)
+        _counter("coreguard_dnssec_validated_total",
+                 "Total DNSSEC-validated responses (AD=1).", stats.dnssec_validated)
+        _counter("coreguard_dnssec_failed_total",
+                 "Total DNSSEC-failed responses (AD=0).", stats.dnssec_failed)
 
         # Labeled counter: query types
         lines.append("# HELP coreguard_queries_by_type Total queries by DNS record type.")

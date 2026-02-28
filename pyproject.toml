@@ -13,6 +13,7 @@ dependencies = [
     "httpx[http2]>=0.24",
     "tomli>=2.0;python_version<'3.11'",
     "tomli-w>=1.0",
+    "aioquic>=1.0",
 ]
 
 [project.scripts]

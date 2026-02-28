@@ -96,13 +96,14 @@ class UpstreamProvider:
     name: str = "cloudflare"
     doh: str = "https://1.1.1.1/dns-query"
     dot: str = "1.1.1.1"
+    doq: str = ""
     plain: str = "1.1.1.1"
 
 
 DEFAULT_UPSTREAM_PROVIDERS = [
-    UpstreamProvider("cloudflare", "https://1.1.1.1/dns-query", "1.1.1.1", "1.1.1.1"),
-    UpstreamProvider("google", "https://8.8.8.8/dns-query", "8.8.8.8", "8.8.8.8"),
-    UpstreamProvider("quad9", "https://9.9.9.9:5053/dns-query", "9.9.9.9", "9.9.9.9"),
+    UpstreamProvider("cloudflare", "https://1.1.1.1/dns-query", "1.1.1.1", "", "1.1.1.1"),
+    UpstreamProvider("google", "https://8.8.8.8/dns-query", "8.8.8.8", "", "8.8.8.8"),
+    UpstreamProvider("quad9", "https://9.9.9.9:5053/dns-query", "9.9.9.9", "", "9.9.9.9"),
 ]
 
 
@@ -110,7 +111,7 @@ DEFAULT_UPSTREAM_PROVIDERS = [
 class Config:
     # Upstream DNS
     upstream_providers: list = field(default_factory=lambda: list(DEFAULT_UPSTREAM_PROVIDERS))
-    upstream_mode: str = "doh"  # "doh", "dot", "plain"
+    upstream_mode: str = "doh"  # "doh", "dot", "doq", "plain"
     upstream_timeout: float = 5.0
 
     # Server
@@ -148,6 +149,10 @@ class Config:
     # Schedules
     schedules: list = field(default_factory=list)
 
+    # DNSSEC
+    dnssec_enabled: bool = False
+    dnssec_strict: bool = False
+
     # Parental controls
     safe_search_enabled: bool = False
     safe_search_youtube_restrict: str = "moderate"  # "moderate" or "strict"
@@ -169,7 +174,7 @@ def _config_to_dict(config: Config) -> dict[str, Any]:
             "mode": config.upstream_mode,
             "timeout": config.upstream_timeout,
             "providers": [
-                {"name": p.name, "doh": p.doh, "dot": p.dot, "plain": p.plain}
+                {"name": p.name, "doh": p.doh, "dot": p.dot, "doq": p.doq, "plain": p.plain}
                 for p in config.upstream_providers
             ],
         },
@@ -212,6 +217,10 @@ def _config_to_dict(config: Config) -> dict[str, Any]:
             }
             for s in config.schedules
         ],
+        "dnssec": {
+            "enabled": config.dnssec_enabled,
+            "strict": config.dnssec_strict,
+        },
         "parental": {
             "safe_search_enabled": config.safe_search_enabled,
             "safe_search_youtube_restrict": config.safe_search_youtube_restrict,
@@ -232,6 +241,7 @@ def _dict_to_config(data: dict[str, Any]) -> Config:
                     name=p.get("name", "custom"),
                     doh=p.get("doh", ""),
                     dot=p.get("dot", ""),
+                    doq=p.get("doq", ""),
                     plain=p.get("plain", ""),
                 )
                 for p in u["providers"]
@@ -288,6 +298,10 @@ def _dict_to_config(data: dict[str, Any]) -> Config:
             )
             for s in data["schedules"]
         ]
+    if "dnssec" in data:
+        ds = data["dnssec"]
+        config.dnssec_enabled = ds.get("enabled", config.dnssec_enabled)
+        config.dnssec_strict = ds.get("strict", config.dnssec_strict)
     if "parental" in data:
         p = data["parental"]
         config.safe_search_enabled = p.get("safe_search_enabled", config.safe_search_enabled)
