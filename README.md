@@ -15,18 +15,18 @@ Coreguard operates as a local DNS resolver on `127.0.0.1:53`. When any applicati
 This approach blocks ads and trackers system-wide — across every browser and application — without installing browser extensions or configuring a proxy.
 
 ```
-┌──────────────┐       ┌──────────────────┐       ┌──────────────────┐
-│  Browser /   │──DNS──▶  Coreguard       │──DoH──▶  Cloudflare     │
-│  Application │       │  127.0.0.1:53    │       │  1.1.1.1 (HTTPS) │
-└──────────────┘       └────────┬─────────┘       └──────────────────┘
-                                │
-                         Is it blocked?
-                           ╱        ╲
-                         Yes         No
-                          │           │
-                     Return 0.0.0.0   Forward upstream
-                     (connection      (encrypted, private)
-                      fails silently)
+  ┌──────────┐    DNS     ┌───────────────────┐    DoH/DoT/DoQ    ┌───────────┐
+  │ Browser  │ ─────────▶ │    Coreguard      │ ───────────────▶  │ Cloudflare│
+  │   App    │            │   127.0.0.1:53    │                   │ Google    │
+  │ System   │ ◀───────── │                   │ ◀──────────────── │ Quad9     │
+  └──────────┘  response  └─────────┬─────────┘    encrypted      └───────────┘
+                                    │
+                               On blocklist?
+                                    │ Yes
+                                    ▼
+                              ┌───────────┐
+                              │  0.0.0.0  │  connection blocked
+                              └───────────┘
 ```
 
 ## Features
