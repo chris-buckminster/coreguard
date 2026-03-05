@@ -272,8 +272,6 @@ def _build_app():  # noqa: C901
             ]
             self._timer = rumps.Timer(self.refresh, _POLL_INTERVAL)
             self._timer.start()
-            # Run an initial refresh immediately.
-            self.refresh(None)
 
         def refresh(self, _sender) -> None:
             """Poll daemon status and update the menu."""
@@ -295,6 +293,8 @@ def _build_app():  # noqa: C901
                 domains = _load_recent_blocked(5)
             except Exception:
                 domains = []
+            if getattr(self.recent_blocked_item, "_menu", None) is None:
+                return
             self.recent_blocked_item.clear()
             if domains:
                 for domain in domains:

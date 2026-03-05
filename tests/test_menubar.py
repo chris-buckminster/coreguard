@@ -295,6 +295,7 @@ class _MockMenuItem:
         self.title = title
         self._callback = callback
         self._children: list[_MockMenuItem] = []
+        self._menu = True  # Simulate native menu being initialized
 
     def set_callback(self, cb):
         self._callback = cb
@@ -537,6 +538,7 @@ class TestRecentBlockedSubmenu:
     def test_refresh_populates_submenu(self, _run, _count, _blocked):
         from coreguard.menubar import _build_app
         app = _build_app()
+        app.refresh(None)
         children = app.recent_blocked_item.values
         assert len(children) == 2
         assert children[0].title == "ads.example.com"
@@ -548,6 +550,7 @@ class TestRecentBlockedSubmenu:
     def test_refresh_empty_submenu(self, _run, _count, _blocked):
         from coreguard.menubar import _build_app
         app = _build_app()
+        app.refresh(None)
         children = app.recent_blocked_item.values
         assert len(children) == 1
         assert children[0].title == "No blocked queries yet"
