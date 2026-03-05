@@ -135,7 +135,7 @@ def _generate_launch_agent_plist() -> str:
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <false/>
+    <true/>
 </dict>
 </plist>
 """
